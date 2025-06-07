@@ -1,1 +1,1 @@
-web: gunicorn gpt4all-server.app:app
+web: gunicorn gpt4all_server.app:app

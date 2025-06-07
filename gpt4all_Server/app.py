@@ -9,7 +9,7 @@ CORS(app)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-DEFAULT_GREETING = "Hey, welcome to Sleep Moon AI assistant! How can I help you today?"
+DEFAULT_GREETING = "Hey, welcome to Silent Moon Sleep Coach! How can I help you sleep better today?"
 
 if not GROQ_API_KEY:
     print("WARNING: GROQ_API_KEY is not set in environment variables!")
@@ -18,21 +18,34 @@ if not GROQ_API_KEY:
 def generate():
     data = request.get_json()
     prompt = data.get("prompt", "")
-    
+
+    # If the prompt is empty, return a calm greeting
     if not prompt.strip():
         return jsonify({"response": DEFAULT_GREETING})
-    
+
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     payload = {
-        "model": "llama3-70b-8192",
-        "messages": [{"role": "user", "content": prompt}],
+        "model": "llama3-70b-8192",  # You can use other Groq-supported models if preferred
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a friendly and supportive sleep coach named Silent Moon. "
+                    "Your job is to help users improve their sleep habits, reduce stress, manage anxiety, "
+                    "and build relaxing bedtime routines. Respond in a calm, reassuring, and conversational tone. "
+                    "Offer helpful suggestions without using technical or medical jargon unless asked. "
+                    "Your tone should always be soothing and optimistic."
+                )
+            },
+            {"role": "user", "content": prompt}
+        ],
         "temperature": 0.7
     }
-    
+
     try:
         res = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=10)
     except requests.exceptions.RequestException as e:
@@ -40,11 +53,12 @@ def generate():
 
     if res.status_code != 200:
         return jsonify({"error": "Groq API error", "details": res.text}), 500
-    
+
     result = res.json()
     message = result["choices"][0]["message"]["content"]
-    
+
     return jsonify({"response": message})
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

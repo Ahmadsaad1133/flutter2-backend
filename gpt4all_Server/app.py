@@ -1,3 +1,5 @@
+# backend/app.py
+
 import json
 import os
 from flask import Flask, request, jsonify
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Load API keys from environment
 groq_api_key = os.getenv("GROQ_API_KEY")
+# Stability AI key is no longer used for images; cartoon images via Pixabay
 pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 
 # API endpoints
@@ -43,31 +46,13 @@ def generate_sleep_analysis(mood: str, sleep_quality: str) -> (str, str):
     return _call_groq(prompt)
 
 
-def extract_keywords_from_story(story: str) -> (str, str):
-    """
-    Use the Groq API to extract 2-3 keywords that best describe
-    the story's setting or theme, separated by commas.
-    """
-    prompt = (
-        "Extract 2-3 keywords that best describe the setting or theme of the following story, "
-        "separated by commas:\n\n"
-        f"{story}"
-    )
-    return _call_groq(prompt)
-
-
 def _call_groq(user_prompt: str) -> (str, str):
     try:
         messages = [
             {"role": "system", "content": "You are a sleep coach assistant."},
             {"role": "user", "content": user_prompt}
         ]
-        payload = {
-            "model": "llama3-70b-8192",
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 300
-        }
+        payload = {"model": "llama3-70b-8192", "messages": messages, "temperature": 0.7, "max_tokens": 300}
         res = requests.post(
             GROQ_API_URL,
             headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
@@ -99,8 +84,8 @@ def search_cartoon_image(query: str) -> str | None:
     params = {
         "key": pixabay_api_key,
         "q": query,
-        "image_type": "illustration",
-        "per_page": 1,
+        "image_type": "illustration",  # cartoon style
+        "per_page": 5,
         "safesearch": "true"
     }
     try:
@@ -155,55 +140,16 @@ def generate_story_and_image():
     if err:
         return jsonify(error=err), 500
 
-    # 2) Extract keywords using AI
-    keywords, err = extract_keywords_from_story(story)
-    if err or not keywords:
-        # fallback to old method if keyword extraction fails
-        keywords = story.split('.')[0]
+    # 2) Extract keywords (first sentence)
+    keywords = story.split('.')[0]
 
-    # Clean keywords (remove newlines, extra spaces)
-    keywords = keywords.replace('\n', ' ').strip()
-
-    # 3) Search cartoon image via Pixabay using keywords
+    # 3) Search cartoon image via Pixabay
     image_url = search_cartoon_image(keywords)
     if not image_url:
-        # return story only, code 207 indicates partial success
+        # return story only, code 207 indicates partial
         return jsonify(story=story), 207
 
     return jsonify(story=story, imageUrl=image_url)
-
-
-@app.route("/generate-multiple-stories-and-images", methods=["POST"])
-def generate_multiple_stories_and_images():
-    data = request.get_json() or {}
-    mood = data.get("mood", "").strip()
-    sleep_quality = data.get("sleep_quality", "").strip()
-    count = data.get("count", 3)  # default 3 cards
-
-    if not mood or not sleep_quality:
-        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
-
-    results = []
-    for _ in range(count):
-        # Generate story
-        story, err = generate_bedtime_story(mood, sleep_quality)
-        if err:
-            return jsonify(error=err), 500
-
-        # Extract keywords from story (AI-powered)
-        keywords, err = extract_keywords_from_story(story)
-        if err or not keywords:
-            # fallback to first sentence if extraction fails
-            keywords = story.split('.')[0]
-
-        keywords = keywords.replace('\n', ' ').strip()
-
-        # Search cartoon image using extracted keywords
-        image_url = search_cartoon_image(keywords)
-
-        results.append({"story": story, "imageUrl": image_url})
-
-    return jsonify(results=results)
 
 
 @app.route("/analyze-sleep", methods=["POST"])

@@ -51,8 +51,6 @@ def generate_bedtime_story(mood: str, sleep_quality: str):
 
 
 def generate_image_from_story(story: str):
-    """Generate an image from the bedtime story text using Stability API."""
-    # Use the story as the image prompt
     prompt = story.strip()
     if not prompt:
         return None, "Empty prompt for image generation."
@@ -70,11 +68,10 @@ def generate_image_from_story(story: str):
         STABILITY_API_URL,
         headers={
             "Authorization": f"Bearer {STABILITY_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"  # ✅ THIS FIXES THE ERROR
         },
-        files={
-            'init_image': (None, ''),  # required by API even if empty
-            'options': (None, json.dumps(payload), 'application/json')
-        },
+        json=payload,
         timeout=30
     )
 
@@ -93,6 +90,7 @@ def generate_image_from_story(story: str):
     clean_b64 = "".join(raw_b64.split())
     data_uri = f"data:image/png;base64,{clean_b64}"
     return data_uri, None
+
 
 
 @app.route("/generate", methods=["POST"])

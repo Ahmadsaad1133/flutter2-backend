@@ -54,7 +54,7 @@ def _call_groq(user_prompt: str) -> (str, str):
         logger.error(f"Groq call failed: {e}")
         return None, str(e)
 
-# Improved image search picks a random illustration for variety
+# Enhanced image search for variety
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         logger.error("Missing PIXABAY_API_KEY environment variable.")
@@ -91,18 +91,18 @@ def generate_stories():
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
     stories = []
-    # Ensure AI knows to create fully unique, distinct stories
+    seen_titles = set()  # Track to ensure title uniqueness
+
     uniqueness_instruction = (
-        "Ensure each story is entirely unique from the others: different title, setting, characters, \n"
-        "and atmosphere. Do not reuse plot elements or phrasing across stories."
+        "Ensure each story has a distinct title, setting, characters, and atmosphere. "
+        "Do not repeat titles or plot elements across stories."
     )
 
     for i in range(count):
         prompt = (
             f"Based solely on the user's input (mood: {mood}, sleep quality: {sleep_quality}), "
-            f"and following the instruction below, create bedtime story number {i+1}:\n"
-            f"{uniqueness_instruction}\n"
-            "Format your output as JSON with fields: title (short calming title), description (1-2 sentences), content (3-5 sentences)."
+            f"create bedtime story number {i+1}. {uniqueness_instruction} "
+            "Format output as JSON with: title (short calming), description (1-2 sentences), content (3-5 sentences)."
         )
         story_json_str, err = _call_groq(prompt)
         if err:
@@ -111,21 +111,30 @@ def generate_stories():
         try:
             story_data = json.loads(story_json_str)
         except Exception:
-            # fallback if JSON invalid
             story_data = {
                 "title": f"Dream Story {i+1}",
                 "description": f"A calming story based on your mood: {mood}",
                 "content": story_json_str
             }
-        # Pick keywords from title or description for image search
-        keywords = extract_text(story_data.get("title")) or extract_text(story_data.get("description")) or mood
+
+        # Extract and enforce unique title
+        raw_title = extract_text(story_data.get("title", f"Dream Story {i+1}"))
+        title = raw_title
+        if title in seen_titles:
+            title = f"{raw_title} ({i+1})"
+        seen_titles.add(title)
+
+        description = extract_text(story_data.get("description", ""))
+        content = extract_text(story_data.get("content", ""))
+
+        keywords = title or description or mood
         image_url = search_cartoon_image(keywords)
         duration_minutes = random.choice([4, 5, 6])
 
         story = {
-            "title": extract_text(story_data.get("title", f"Dream Story {i+1}")),
-            "description": extract_text(story_data.get("description", "")),
-            "content": extract_text(story_data.get("content", "")),
+            "title": title,
+            "description": description,
+            "content": content,
             "imageUrl": image_url or "",
             "durationMinutes": duration_minutes
         }
@@ -145,12 +154,11 @@ def generate_story_and_image():
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
     uniqueness_instruction = (
-        "Ensure the story content is unique, creative, and based entirely on the user's input."
+        "Ensure the story has a unique title and content based entirely on the user's input."
     )
     prompt = (
         f"Based solely on the user's input (mood: {mood}, sleep quality: {sleep_quality}), "
-        f"{uniqueness_instruction}\n"
-        "Format your output as JSON with fields: title, description, content."
+        f"{uniqueness_instruction} Format output as JSON with title, description, content."
     )
     story_json_str, err = _call_groq(prompt)
     if err:
@@ -165,14 +173,18 @@ def generate_story_and_image():
             "content": story_json_str
         }
 
-    keywords = extract_text(story_data.get("title")) or extract_text(story_data.get("description")) or mood
+    title = extract_text(story_data.get("title", "Dream Story"))
+    description = extract_text(story_data.get("description", ""))
+    content = extract_text(story_data.get("content", ""))
+
+    keywords = title or description or mood
     image_url = search_cartoon_image(keywords)
     duration_minutes = random.choice([4, 5, 6])
 
     story = {
-        "title": extract_text(story_data.get("title", "Dream Story")),
-        "description": extract_text(story_data.get("description", "")),
-        "content": extract_text(story_data.get("content", "")),
+        "title": title,
+        "description": description,
+        "content": content,
         "imageUrl": image_url or "",
         "durationMinutes": duration_minutes
     }
@@ -182,5 +194,6 @@ def generate_story_and_image():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 

@@ -19,15 +19,43 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
 def extract_text(value):
+    """Extracts a clean string from a value that might be a string, dict, or nested JSON."""
     if isinstance(value, str):
-        return value
+        # Try to decode nested JSON if value looks like JSON
+        try:
+            decoded = json.loads(value)
+            return extract_text(decoded)
+        except Exception:
+            return value.strip()
     elif isinstance(value, dict):
         for key in ['text', 'content', 'en', 'value']:
             if key in value and isinstance(value[key], str):
-                return value[key]
+                return extract_text(value[key])
         return json.dumps(value)
     else:
         return str(value) if value is not None else ''
+
+def clean_json_output(json_text: str) -> dict:
+    """Attempts to clean and flatten Groq's JSON response safely."""
+    try:
+        parsed = json.loads(json_text)
+        if not isinstance(parsed, dict):
+            return {
+                "title": "Oneiric Dream",
+                "description": "A calm bedtime story.",
+                "content": json_text
+            }
+        parsed["title"] = extract_text(parsed.get("title", "Oneiric Dream"))
+        parsed["description"] = extract_text(parsed.get("description", "A relaxing story"))
+        parsed["content"] = extract_text(parsed.get("content", "Close your eyes and drift away..."))
+        return parsed
+    except Exception as e:
+        logger.warning(f"Failed to parse JSON response cleanly: {e}")
+        return {
+            "title": "Oneiric Dream",
+            "description": "A calm bedtime story.",
+            "content": extract_text(json_text)
+        }
 
 def _call_groq(user_prompt: str) -> (str, str):
     try:
@@ -58,21 +86,6 @@ def _call_groq(user_prompt: str) -> (str, str):
     except Exception as e:
         logger.error(f"Groq call failed: {e}")
         return None, str(e)
-
-def clean_json_output(json_text: str) -> dict:
-    try:
-        parsed = json.loads(json_text)
-        if isinstance(parsed, dict):
-            content = parsed.get("content", "")
-            if isinstance(content, dict):
-                parsed["content"] = json.dumps(content, indent=2)
-        return parsed
-    except Exception:
-        return {
-            "title": "Oneiric Dream",
-            "description": "A calm bedtime story.",
-            "content": json_text
-        }
 
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
@@ -111,26 +124,28 @@ def generate_stories():
     stories = []
     seen_titles = set()
 
+    uniqueness_instruction = (
+        "Ensure each story has a distinct, original, creative title, setting, characters, and mood. "
+        "Do not reuse or repeat any wording, titles, or structure across stories. "
+        "Output format: JSON with fields: title, description, content. "
+        "All values must be plain strings. Avoid nested objects or markdown/code formatting."
+    )
+
     for i in range(count):
         prompt = (
-            f"You are Silent Veil, a calm sleep coach. Based solely on the user's mood '{mood}' "
+            f"You are Silent Veil, a calm sleep coach. Based on the user's mood '{mood}' "
             f"and sleep quality '{sleep_quality}', create a unique bedtime story #{i+1}. "
-            "Ensure the story has a completely original and distinct **title** that has not been used in previous stories. "
-            "Each story must have a unique setting, different characters, and a varied emotional tone. "
-            "Avoid reusing any structure, names, or phrases. "
-            "Format the output as flat JSON with fields: title, description, content. "
-            "All values must be plain strings. No markdown or nested data."
+            f"{uniqueness_instruction}"
         )
-
         story_json_str, err = _call_groq(prompt)
         story_data = clean_json_output(story_json_str or "")
 
         raw_title = extract_text(story_data.get("title", f"Oneiric Journey #{i+1}")).strip()
         unique_title = raw_title
-        suffix = 2
+        suffix = 1
         while unique_title in seen_titles:
-            unique_title = f"{raw_title} ({suffix})"
             suffix += 1
+            unique_title = f"{raw_title} ({suffix})"
         seen_titles.add(unique_title)
 
         description = extract_text(story_data.get("description", "")).strip()
@@ -140,8 +155,8 @@ def generate_stories():
 
         stories.append({
             "title": unique_title,
-            "description": description,
-            "content": content,
+            "description": description or "A gentle bedtime story to relax you.",
+            "content": content or "Close your eyes and breathe deeply. Let this story guide you to calmness.",
             "imageUrl": image_url,
             "durationMinutes": duration
         })
@@ -161,15 +176,14 @@ def generate_story_and_image():
 
     prompt = (
         f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
-        "create a calming, unique bedtime story. Respond in JSON with title, description, and plain natural language content. "
-        "All fields must be plain strings. Do not return code, markdown, or nested objects."
+        "create a calming, unique bedtime story. Respond in JSON with title, description, and plain natural language content."
     )
     story_json_str, err = _call_groq(prompt)
     story_data = clean_json_output(story_json_str or "")
 
     title = extract_text(story_data.get("title", "Oneiric Dream")).strip()
-    description = extract_text(story_data.get("description", "")).strip()
-    content = extract_text(story_data.get("content", "")).strip()
+    description = extract_text(story_data.get("description", "A peaceful bedtime story")).strip()
+    content = extract_text(story_data.get("content", "Close your eyes and drift into dreams")).strip()
     image_url = search_cartoon_image(title or mood) or ""
     duration = random.choice([4, 5, 6])
 

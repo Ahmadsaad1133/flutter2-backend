@@ -140,16 +140,17 @@ def generate_story_and_image():
     if err:
         return jsonify(error=err), 500
 
-    # 2) Extract keywords (first sentence)
-    keywords = story.split('.')[0]
+    # 2) Generate keyword query
+    keywords = f"{mood} {sleep_quality} night"
+    logger.info(f"🔍 Searching image with keywords: {keywords}")
 
-    # 3) Search cartoon image via Pixabay
+    # 3) Search cartoon image
     image_url = search_cartoon_image(keywords)
-    if not image_url:
-        # return story only, code 207 indicates partial
-        return jsonify(story=story), 207
+    logger.info(f"🎨 Image URL: {image_url}")
 
-    return jsonify(story=story, imageUrl=image_url)
+    # 4) Return full response (even if image_url is None)
+    return jsonify(story=story, imageUrl=image_url or "")
+
 
 
 @app.route("/analyze-sleep", methods=["POST"])

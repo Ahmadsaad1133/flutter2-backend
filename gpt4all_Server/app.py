@@ -16,11 +16,12 @@ logger = logging.getLogger(__name__)
 
 # Load API keys from environment
 groq_api_key = os.getenv("GROQ_API_KEY")
-stability_api_key = os.getenv("STABILITY_API_KEY")
+# Stability AI key is no longer used for images; cartoon images via Pixabay
+pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 
 # API endpoints
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-STABILITY_API_URL = "https://api.stability.ai/v2beta/stable-image/generate/core"
+PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
 
 def generate_bedtime_story(mood: str, sleep_quality: str) -> (str, str):
@@ -52,7 +53,12 @@ def _call_groq(user_prompt: str) -> (str, str):
             {"role": "user", "content": user_prompt}
         ]
         payload = {"model": "llama3-70b-8192", "messages": messages, "temperature": 0.7, "max_tokens": 300}
-        res = requests.post(GROQ_API_URL, headers={"Authorization": f"Bearer {groq_api_key}","Content-Type": "application/json"}, json=payload, timeout=20)
+        res = requests.post(
+            GROQ_API_URL,
+            headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=20
+        )
         if res.status_code != 200:
             logger.error(f"Groq API error: {res.status_code} - {res.text}")
             return None, f"Groq API error: {res.status_code}"
@@ -66,40 +72,34 @@ def _call_groq(user_prompt: str) -> (str, str):
         return None, str(e)
 
 
-def generate_image_from_story(story: str, tone: str = None, theme: str = None) -> (str, str):
-    sentences = [s.strip() for s in story.split('.') if s.strip()]
-    short_prompt = " ".join(sentences[:3]) + ". Calm, peaceful, bedtime story style."
-    if theme:
-        short_prompt += f" Theme: {theme}."
-    if tone:
-        short_prompt += f" Tone: {tone}."
+def search_cartoon_image(query: str) -> str | None:
+    """
+    Search Pixabay for a cartoon/illustration matching the query.
+    Returns the URL of the first hit or None.
+    """
+    if not pixabay_api_key:
+        logger.error("Missing PIXABAY_API_KEY environment variable.")
+        return None
 
-    form_data = {
-        "prompt": (None, short_prompt[:1000]),
-        "model": (None, "core"),
-        "output_format": (None, "png"),
-        "cfg_scale": (None, "6"),
-        "samples": (None, "1"),
-        "width": (None, "512"),
-        "height": (None, "512"),
-        "steps": (None, "30"),
-        "style_preset": (None, "fantasy-art")
+    params = {
+        "key": pixabay_api_key,
+        "q": query,
+        "image_type": "illustration",  # cartoon style
+        "per_page": 1,
+        "safesearch": "true"
     }
     try:
-        res = requests.post(STABILITY_API_URL, headers={"Authorization": f"Bearer {stability_api_key}","Accept": "application/json"}, files=form_data, timeout=45)
-        if res.status_code != 200:
-            err = res.json().get('message', res.text)
-            logger.error(f"Stability API error: {err}")
-            return None, err
-        artifacts = res.json().get("artifacts", [])
-        raw_b64 = (artifacts[0].get("base64") or artifacts[0].get("image")) if artifacts else None
-        if not raw_b64:
-            return None, "No image data"
-        data_uri = f"data:image/png;base64,{''.join(raw_b64.split())}"
-        return data_uri, None
+        resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=10)
+        if resp.status_code != 200:
+            logger.error(f"Pixabay API error {resp.status_code}: {resp.text}")
+            return None
+        hits = resp.json().get("hits", [])
+        if not hits:
+            return None
+        return hits[0].get("webformatURL")
     except Exception as e:
-        logger.error(f"Image generation failed: {e}")
-        return None, str(e)
+        logger.error(f"Pixabay search failed: {e}")
+        return None
 
 
 @app.route("/chat", methods=["POST"])
@@ -132,17 +132,23 @@ def generate_story_and_image():
     data = request.get_json() or {}
     mood = data.get("mood", "").strip()
     sleep_quality = data.get("sleep_quality", "").strip()
-    tone = data.get("tone")
-    theme = data.get("theme")
-    # allow optional parameters but require mood and sleep_quality
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
+
+    # 1) Generate bedtime story
     story, err = generate_bedtime_story(mood, sleep_quality)
     if err:
         return jsonify(error=err), 500
-    image_url, img_err = generate_image_from_story(story, tone=tone, theme=theme)
-    if img_err:
-        return jsonify(story=story, error=img_err), 207
+
+    # 2) Extract keywords (first sentence)
+    keywords = story.split('.')[0]
+
+    # 3) Search cartoon image via Pixabay
+    image_url = search_cartoon_image(keywords)
+    if not image_url:
+        # return story only, code 207 indicates partial
+        return jsonify(story=story), 207
+
     return jsonify(story=story, imageUrl=image_url)
 
 

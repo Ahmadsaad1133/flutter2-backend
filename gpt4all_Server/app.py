@@ -85,7 +85,7 @@ def search_cartoon_image(query: str) -> str | None:
         "key": pixabay_api_key,
         "q": query,
         "image_type": "illustration",  # cartoon style
-        "per_page": 5,
+        "per_page": 10,
         "safesearch": "true"
     }
     try:

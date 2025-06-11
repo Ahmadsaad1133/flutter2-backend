@@ -120,17 +120,18 @@ def generate_story_and_image():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-    # Generate story
     story, err = generate_bedtime_story(mood, sleep_quality)
     if err:
+        print("Story error:", err)
         return jsonify(error=err), 500
 
-    # Generate image based on story
     image_url, err = generate_image_from_story(story)
     if err:
+        print("Image error:", err)
         return jsonify(error=err), 500
 
     return jsonify(story=story, imageUrl=image_url)
+
 
 
 if __name__ == "__main__":

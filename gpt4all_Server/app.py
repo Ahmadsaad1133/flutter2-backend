@@ -1,3 +1,5 @@
+# backend/app.py
+
 import json
 import os
 from flask import Flask, request, jsonify
@@ -6,7 +8,7 @@ from flask_cors import CORS
 import logging
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,7 +42,7 @@ def generate_bedtime_story(mood: str, sleep_quality: str):
             "model": "llama3-70b-8192",
             "messages": messages,
             "temperature": 0.7,
-            "max_tokens": 300  # Limit story length
+            "max_tokens": 300
         }
 
         res = requests.post(
@@ -74,24 +76,19 @@ def generate_bedtime_story(mood: str, sleep_quality: str):
 def generate_image_from_story(story: str):
     """Generate an image from the bedtime story text using Stability API."""
     try:
-        # Extract key elements for image prompt
         sentences = [s.strip() for s in story.split('.') if s.strip()]
         short_prompt = " ".join(sentences[:3]) + ". Calm, peaceful, bedtime story style."
         
-        if not short_prompt:
-            return None, "Empty prompt for image generation."
-
-        # Prepare form data with optimized parameters
         form_data = {
-            "prompt": (None, short_prompt[:1000]),  # Truncate if too long
+            "prompt": (None, short_prompt[:1000]),
             "model": (None, "core"),
             "output_format": (None, "png"),
-            "cfg_scale": (None, "6"),  # Better for creative results
+            "cfg_scale": (None, "6"),
             "samples": (None, "1"),
             "width": (None, "512"),
             "height": (None, "512"),
-            "steps": (None, "30"),  # Reduced for faster generation
-            "style_preset": (None, "fantasy-art")  # Better style for stories
+            "steps": (None, "30"),
+            "style_preset": (None, "fantasy-art")
         }
 
         res = requests.post(
@@ -119,14 +116,9 @@ def generate_image_from_story(story: str):
 
         result = res.json()
         artifacts = result.get("artifacts", [])
-        
         if not artifacts:
-            # Check for alternative response format
-            if 'image' in result:
-                raw_b64 = result['image']
-            else:
-                logger.error(f"No artifacts in response: {result}")
-                return None, "Image generation produced no results"
+            logger.error(f"No artifacts in response: {result}")
+            return None, "Image generation produced no results"
 
         raw_b64 = artifacts[0].get("base64") or artifacts[0].get("image")
         if not raw_b64:
@@ -142,49 +134,40 @@ def generate_image_from_story(story: str):
 
 @app.route("/generate", methods=["POST"])
 def generate_text():
-    try:
-        data = request.get_json() or {}
-        mood = data.get("mood", "").strip()
-        sleep_quality = data.get("sleep_quality", "").strip()
+    data = request.get_json() or {}
+    mood = data.get("mood", "").strip()
+    sleep_quality = data.get("sleep_quality", "").strip()
 
-        if not mood or not sleep_quality:
-            return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
+    if not mood or not sleep_quality:
+        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-        story, err = generate_bedtime_story(mood, sleep_quality)
-        if err:
-            return jsonify(error=err), 500
+    story, err = generate_bedtime_story(mood, sleep_quality)
+    if err:
+        return jsonify(error=err), 500
 
-        return jsonify(story=story)
-        
-    except Exception as e:
-        logger.error(f"Generate text endpoint error: {str(e)}")
-        return jsonify(error="Internal server error"), 500
+    return jsonify(story=story)
 
 @app.route("/generate-story-and-image", methods=["POST"])
 def generate_story_and_image():
-    try:
-        data = request.get_json() or {}
-        mood = data.get("mood", "").strip()
-        sleep_quality = data.get("sleep_quality", "").strip()
+    data = request.get_json() or {}
+    mood = data.get("mood", "").strip()
+    sleep_quality = data.get("sleep_quality", "").strip()
 
-        if not mood or not sleep_quality:
-            return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
+    if not mood or not sleep_quality:
+        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-        story, err = generate_bedtime_story(mood, sleep_quality)
-        if err:
-            return jsonify(error=err), 500
+    story, err = generate_bedtime_story(mood, sleep_quality)
+    if err:
+        return jsonify(error=err), 500
 
-        image_url, err = generate_image_from_story(story)
-        if err:
-            # Return story even if image fails
-            return jsonify(story=story, error=err), 207  # Multi-status
-            
-        return jsonify(story=story, imageUrl=image_url)
-        
-    except Exception as e:
-        logger.error(f"Generate story+image endpoint error: {str(e)}")
-        return jsonify(error="Internal server error"), 500
+    image_url, img_err = generate_image_from_story(story)
+    if img_err:
+        # return 207 to indicate story OK but image failed
+        return jsonify(story=story, error=img_err), 207
+
+    return jsonify(story=story, imageUrl=image_url)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+

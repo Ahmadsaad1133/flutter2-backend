@@ -35,7 +35,12 @@ def _call_groq(user_prompt: str) -> (str, str):
             {"role": "system", "content": "You are Silent Veil, a calm sleep coach assistant."},
             {"role": "user", "content": user_prompt}
         ]
-        payload = {"model": "llama3-70b-8192", "messages": messages, "temperature": 0.95, "max_tokens": 600}
+        payload = {
+            "model": "llama3-70b-8192",
+            "messages": messages,
+            "temperature": 0.95,
+            "max_tokens": 600
+        }
         res = requests.post(
             GROQ_API_URL,
             headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
@@ -106,27 +111,26 @@ def generate_stories():
     stories = []
     seen_titles = set()
 
-    uniqueness_instruction = (
-        "Ensure each story has a distinct, original, creative title, setting, characters, and mood. "
-        "Do not reuse or repeat any wording, titles, or structure across stories. Format output as JSON with string values only. "
-        "Avoid nested JSON or code-like syntax in the 'content' field."
-    )
-
     for i in range(count):
         prompt = (
             f"You are Silent Veil, a calm sleep coach. Based solely on the user's mood '{mood}' "
-            f"and sleep quality '{sleep_quality}', create a unique bedtime story #{i+1}. {uniqueness_instruction} "
-            "Output fields: title, description, content."
+            f"and sleep quality '{sleep_quality}', create a unique bedtime story #{i+1}. "
+            "Ensure the story has a completely original and distinct **title** that has not been used in previous stories. "
+            "Each story must have a unique setting, different characters, and a varied emotional tone. "
+            "Avoid reusing any structure, names, or phrases. "
+            "Format the output as flat JSON with fields: title, description, content. "
+            "All values must be plain strings. No markdown or nested data."
         )
+
         story_json_str, err = _call_groq(prompt)
         story_data = clean_json_output(story_json_str or "")
 
         raw_title = extract_text(story_data.get("title", f"Oneiric Journey #{i+1}")).strip()
         unique_title = raw_title
-        suffix = 1
+        suffix = 2
         while unique_title in seen_titles:
-            suffix += 1
             unique_title = f"{raw_title} ({suffix})"
+            suffix += 1
         seen_titles.add(unique_title)
 
         description = extract_text(story_data.get("description", "")).strip()
@@ -157,7 +161,8 @@ def generate_story_and_image():
 
     prompt = (
         f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
-        "create a calming, unique bedtime story. Respond in JSON with title, description, and plain natural language content."
+        "create a calming, unique bedtime story. Respond in JSON with title, description, and plain natural language content. "
+        "All fields must be plain strings. Do not return code, markdown, or nested objects."
     )
     story_json_str, err = _call_groq(prompt)
     story_data = clean_json_output(story_json_str or "")

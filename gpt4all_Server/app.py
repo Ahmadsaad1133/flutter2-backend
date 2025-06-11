@@ -173,6 +173,39 @@ def generate_story_and_image():
     return jsonify(story=story, imageUrl=image_url)
 
 
+@app.route("/generate-multiple-stories-and-images", methods=["POST"])
+def generate_multiple_stories_and_images():
+    data = request.get_json() or {}
+    mood = data.get("mood", "").strip()
+    sleep_quality = data.get("sleep_quality", "").strip()
+    count = data.get("count", 3)  # default 3 cards
+
+    if not mood or not sleep_quality:
+        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
+
+    results = []
+    for _ in range(count):
+        # Generate story
+        story, err = generate_bedtime_story(mood, sleep_quality)
+        if err:
+            return jsonify(error=err), 500
+
+        # Extract keywords from story (AI-powered)
+        keywords, err = extract_keywords_from_story(story)
+        if err or not keywords:
+            # fallback to first sentence if extraction fails
+            keywords = story.split('.')[0]
+
+        keywords = keywords.replace('\n', ' ').strip()
+
+        # Search cartoon image using extracted keywords
+        image_url = search_cartoon_image(keywords)
+
+        results.append({"story": story, "imageUrl": image_url})
+
+    return jsonify(results=results)
+
+
 @app.route("/analyze-sleep", methods=["POST"])
 def analyze_sleep():
     data = request.get_json() or {}
@@ -189,4 +222,3 @@ def analyze_sleep():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-

@@ -93,14 +93,15 @@ def generate_stories():
 
     uniqueness_instruction = (
         "Ensure each story has a distinct, original, creative title, setting, characters, and mood. "
-        "Do not reuse or repeat any wording, titles, or structure across stories."
+        "Do not reuse or repeat any wording, titles, or structure across stories. Respond in JSON format, "
+        "but do not wrap content field in JSON — make it plain natural language only."
     )
 
     for i in range(count):
         prompt = (
             f"You are Silent Veil, a calm sleep coach. Based solely on the user's mood '{mood}' "
             f"and sleep quality '{sleep_quality}', create a unique bedtime story #{i+1}. {uniqueness_instruction} "
-            "Respond in strict JSON with fields: title, description, content."
+            "Output fields: title, description, content."
         )
         story_json_str, err = _call_groq(prompt)
         if not err:
@@ -154,7 +155,7 @@ def generate_story_and_image():
 
     prompt = (
         f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
-        "create a calming, unique bedtime story. Respond in JSON with title, description, content."
+        "create a calming, unique bedtime story. Respond in JSON with title, description, and natural language content (no JSON inside content)."
     )
     story_json_str, err = _call_groq(prompt)
     if err:
@@ -186,5 +187,6 @@ def generate_story_and_image():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 

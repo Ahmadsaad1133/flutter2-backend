@@ -7,21 +7,17 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
-# Load API keys from environment
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 
-# API endpoints
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 STABILITY_API_URL = "https://api.stability.ai/v2beta/stable-image/generate/core"
 
-@app.route("/generate", methods=["POST"])
-def generate_text():
-    data = request.get_json() or {}
-    prompt = data.get("prompt", "").strip()
-    if not prompt:
-        return jsonify(error="Missing prompt"), 400
-
+def generate_bedtime_story(mood, sleep_quality):
+    prompt = (
+        f"Based on the user's mood: '{mood}' and how they slept tonight: '{sleep_quality}', "
+        "create a calm, soothing bedtime story to help them relax."
+    )
     messages = [
         {"role": "system", "content": "You are Silent Veil, a calm sleep coach."},
         {"role": "user", "content": prompt}
@@ -41,20 +37,13 @@ def generate_text():
         json=payload,
         timeout=15
     )
-
     if res.status_code != 200:
-        return jsonify(error=res.text), 500
+        return None, res.text
 
-    content = res.json().get("choices", [])[0].get("message", {}).get("content")
-    return jsonify(response=content)
+    story = res.json().get("choices", [])[0].get("message", {}).get("content")
+    return story, None
 
-@app.route("/generate-image", methods=["POST"])
-def generate_image():
-    data = request.get_json() or {}
-    prompt = data.get("prompt", "").strip()
-    if not prompt:
-        return jsonify(error="Missing prompt"), 400
-
+def generate_image_from_prompt(prompt):
     payload = {
         "text_prompts": [{"text": prompt}],
         "cfg_scale": 7,
@@ -68,37 +57,63 @@ def generate_image():
         STABILITY_API_URL,
         headers={
             "Authorization": f"Bearer {STABILITY_API_KEY}",
-            "Accept": "application/json"  # <-- Important fix here
+            "Accept": "application/json"
         },
         files={
-            'init_image': (None, ''),  # required field placeholder
+            'init_image': (None, ''),
             'options': (None, json.dumps(payload), 'application/json')
         },
         timeout=30
     )
 
-    print("[Stability] status:", res.status_code)
-    print("[Stability] body snippet:", res.text[:200])
-
     if res.status_code != 200:
-        return jsonify(error=res.text), 500
+        return None, res.text
 
     result = res.json()
     artifacts = result.get("artifacts", [])
     if not artifacts:
-        return jsonify(error="No artifacts returned"), 500
+        return None, "No artifacts returned"
 
     raw_b64 = artifacts[0].get("base64") or artifacts[0].get("b64_encoded_image")
     if not raw_b64:
-        return jsonify(error="No base64 image in artifacts"), 500
+        return None, "No base64 image in artifacts"
     clean_b64 = "".join(raw_b64.split())
     data_uri = f"data:image/png;base64,{clean_b64}"
+    return data_uri, None
 
-    print("[Stability] returning data URI snippet:", data_uri[:50], "...")
-    return jsonify(imageUrl=data_uri)
+def create_image_prompt_from_story(story_text):
+    # You can make this smarter with NLP or prompt engineering,
+    # but for now, a simple heuristic:
+    # Extract key elements or just say "illustration of: {story snippet}"
+    snippet = story_text[:150].replace('\n', ' ')  # first 150 chars
+    return f"Calm, soothing bedtime scene, inspired by: {snippet}"
+
+@app.route("/generate-story-and-image", methods=["POST"])
+def generate_story_and_image():
+    data = request.get_json() or {}
+    mood = data.get("mood", "").strip()
+    sleep_quality = data.get("sleep_quality", "").strip()
+
+    if not mood or not sleep_quality:
+        return jsonify(error="Missing mood or sleep_quality"), 400
+
+    story, err = generate_bedtime_story(mood, sleep_quality)
+    if err:
+        return jsonify(error=err), 500
+
+    image_prompt = create_image_prompt_from_story(story)
+    image_data_url, err = generate_image_from_prompt(image_prompt)
+    if err:
+        return jsonify(error=err), 500
+
+    return jsonify(
+        story=story,
+        imageUrl=image_data_url,
+        imagePrompt=image_prompt
+    )
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
 

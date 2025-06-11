@@ -32,10 +32,10 @@ def extract_text(value):
 def _call_groq(user_prompt: str) -> (str, str):
     try:
         messages = [
-            {"role": "system", "content": "You are a sleep coach assistant."},
+            {"role": "system", "content": "You are Silent Veil, a calm sleep coach assistant."},
             {"role": "user", "content": user_prompt}
         ]
-        payload = {"model": "llama3-70b-8192", "messages": messages, "temperature": 0.7, "max_tokens": 300}
+        payload = {"model": "llama3-70b-8192", "messages": messages, "temperature": 0.8, "max_tokens": 500}
         res = requests.post(
             GROQ_API_URL,
             headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
@@ -54,6 +54,7 @@ def _call_groq(user_prompt: str) -> (str, str):
         logger.error(f"Groq call failed: {e}")
         return None, str(e)
 
+# Improved image search picks a random illustration for variety
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         logger.error("Missing PIXABAY_API_KEY environment variable.")
@@ -73,50 +74,50 @@ def search_cartoon_image(query: str) -> str | None:
         hits = resp.json().get("hits", [])
         if not hits:
             return None
-        return hits[0].get("webformatURL")
+        choice = random.choice(hits)
+        return choice.get("webformatURL")
     except Exception as e:
         logger.error(f"Pixabay search failed: {e}")
         return None
 
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
-    """
-    Generate multiple bedtime stories, each with title, description, imageUrl, durationMinutes, content.
-    """
     data = request.get_json() or {}
     mood = data.get("mood", "").strip()
     sleep_quality = data.get("sleep_quality", "").strip()
-    count = int(data.get("count", 3))  # number of stories to generate, default 3
+    count = int(data.get("count", 3))
 
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
     stories = []
+    # Ensure AI knows to create fully unique, distinct stories
+    uniqueness_instruction = (
+        "Ensure each story is entirely unique from the others: different title, setting, characters, \n"
+        "and atmosphere. Do not reuse plot elements or phrasing across stories."
+    )
 
     for i in range(count):
         prompt = (
-            f"You are Silent Veil, a calm sleep coach.\n"
-            f"Create a short bedtime story with:\n"
-            f"- A calming title\n"
-            f"- A 1-2 sentence description\n"
-            f"- A 3-5 sentence story content\n"
-            f"Based on mood: {mood} and sleep quality: {sleep_quality}.\n"
-            f"Format your response as JSON with fields: title, description, content."
+            f"Based solely on the user's input (mood: {mood}, sleep quality: {sleep_quality}), "
+            f"and following the instruction below, create bedtime story number {i+1}:\n"
+            f"{uniqueness_instruction}\n"
+            "Format your output as JSON with fields: title (short calming title), description (1-2 sentences), content (3-5 sentences)."
         )
         story_json_str, err = _call_groq(prompt)
         if err:
             logger.error(f"Error generating story {i+1}: {err}")
             continue
-        
         try:
             story_data = json.loads(story_json_str)
         except Exception:
+            # fallback if JSON invalid
             story_data = {
                 "title": f"Dream Story {i+1}",
                 "description": f"A calming story based on your mood: {mood}",
                 "content": story_json_str
             }
-
+        # Pick keywords from title or description for image search
         keywords = extract_text(story_data.get("title")) or extract_text(story_data.get("description")) or mood
         image_url = search_cartoon_image(keywords)
         duration_minutes = random.choice([4, 5, 6])
@@ -124,9 +125,9 @@ def generate_stories():
         story = {
             "title": extract_text(story_data.get("title", f"Dream Story {i+1}")),
             "description": extract_text(story_data.get("description", "")),
+            "content": extract_text(story_data.get("content", "")),
             "imageUrl": image_url or "",
-            "durationMinutes": duration_minutes,
-            "content": extract_text(story_data.get("content", ""))
+            "durationMinutes": duration_minutes
         }
         stories.append(story)
 
@@ -134,7 +135,6 @@ def generate_stories():
         return jsonify(error="Failed to generate any stories"), 500
 
     return jsonify(stories=stories)
-
 
 @app.route("/generate-story-and-image", methods=["POST"])
 def generate_story_and_image():
@@ -144,14 +144,13 @@ def generate_story_and_image():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
+    uniqueness_instruction = (
+        "Ensure the story content is unique, creative, and based entirely on the user's input."
+    )
     prompt = (
-        f"You are Silent Veil, a calm sleep coach.\n"
-        f"Create a short bedtime story with:\n"
-        f"- A calming title\n"
-        f"- A 1-2 sentence description\n"
-        f"- A 3-5 sentence story content\n"
-        f"Based on mood: {mood} and sleep quality: {sleep_quality}.\n"
-        f"Format your response as JSON with fields: title, description, content."
+        f"Based solely on the user's input (mood: {mood}, sleep quality: {sleep_quality}), "
+        f"{uniqueness_instruction}\n"
+        "Format your output as JSON with fields: title, description, content."
     )
     story_json_str, err = _call_groq(prompt)
     if err:
@@ -173,13 +172,12 @@ def generate_story_and_image():
     story = {
         "title": extract_text(story_data.get("title", "Dream Story")),
         "description": extract_text(story_data.get("description", "")),
+        "content": extract_text(story_data.get("content", "")),
         "imageUrl": image_url or "",
-        "durationMinutes": duration_minutes,
-        "content": extract_text(story_data.get("content", ""))
+        "durationMinutes": duration_minutes
     }
 
     return jsonify(story=story)
-
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))

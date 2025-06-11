@@ -47,31 +47,37 @@ def generate_text():
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
-    data = request.get_json() or {}
-    prompt = data.get("prompt", "").strip()
+    data = request.get_json(silent=True)
+    # Allow prompt via JSON or form-data
+    prompt = None
+    if data and data.get("prompt"):
+        prompt = data.get("prompt").strip()
+    else:
+        prompt = request.form.get("prompt", "").strip()
+
     if not prompt:
         return jsonify(error="Missing prompt"), 400
 
-    # Construct JSON payload for Stability API
-    payload = {
-        "text_prompts": [
-            {"text": prompt}
-        ],
-        "cfg_scale": 7,
-        "samples": 1,
-        "width": 512,
-        "height": 512,
-        "steps": 50
+    # Send multipart/form-data with required stability parameters
+    files = {
+        'prompt': (None, prompt),
+        'cfg_scale': (None, '7'),
+        'samples': (None, '1'),
+        'width': (None, '512'),
+        'height': (None, '512'),
+        'steps': (None, '50'),
+        'output_format': (None, 'png')
+    }
+    headers = {
+        "Authorization": f"Bearer {STABILITY_API_KEY}",
+        "Accept": "application/json"
+        # Do not set Content-Type manually; requests sets multipart boundary
     }
 
     res = requests.post(
         STABILITY_API_URL,
-        headers={
-            "Authorization": f"Bearer {STABILITY_API_KEY}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        },
-        json=payload,
+        headers=headers,
+        files=files,
         timeout=30
     )
 
@@ -87,4 +93,5 @@ def generate_image():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+
 

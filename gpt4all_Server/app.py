@@ -51,11 +51,12 @@ def generate_bedtime_story(mood: str, sleep_quality: str):
 
 
 def generate_image_from_story(story: str):
+    """Generate an image from the bedtime story text using Stability API."""
     prompt = story.strip()
     if not prompt:
         return None, "Empty prompt for image generation."
 
-    payload = {
+    options_payload = {
         "text_prompts": [{"text": prompt}],
         "cfg_scale": 7,
         "samples": 1,
@@ -68,10 +69,12 @@ def generate_image_from_story(story: str):
         STABILITY_API_URL,
         headers={
             "Authorization": f"Bearer {STABILITY_API_KEY}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"  # ✅ THIS FIXES THE ERROR
+            "Accept": "application/json"
         },
-        json=payload,
+        files={
+            "init_image": (None, ""),
+            "options": (None, json.dumps(options_payload), "application/json")
+        },
         timeout=30
     )
 
@@ -90,7 +93,6 @@ def generate_image_from_story(story: str):
     clean_b64 = "".join(raw_b64.split())
     data_uri = f"data:image/png;base64,{clean_b64}"
     return data_uri, None
-
 
 
 @app.route("/generate", methods=["POST"])
@@ -118,22 +120,22 @@ def generate_story_and_image():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
+    # Generate story
     story, err = generate_bedtime_story(mood, sleep_quality)
     if err:
-        print("Story error:", err)
         return jsonify(error=err), 500
 
+    # Generate image based on story
     image_url, err = generate_image_from_story(story)
     if err:
-        print("Image error:", err)
         return jsonify(error=err), 500
 
     return jsonify(story=story, imageUrl=image_url)
 
 
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 

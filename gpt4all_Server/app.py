@@ -74,8 +74,9 @@ def generate_image():
         timeout=30
     )
 
-    # Debug log: inspect raw response
-    print("Stability API response:", res.status_code, res.text)
+    # Log status and raw response for debugging
+    print("[Stability] status:", res.status_code)
+    print("[Stability] body snippet:", res.text[:200])
 
     if res.status_code != 200:
         return jsonify(error=res.text), 500
@@ -85,19 +86,19 @@ def generate_image():
     if not artifacts:
         return jsonify(error="No artifacts returned"), 500
 
-    # Extract base64-encoded image
-    b64 = artifacts[0].get("base64") or artifacts[0].get("b64_encoded_image")
-    if not b64:
+    # Extract base64 string and strip whitespace/newlines
+    raw_b64 = artifacts[0].get("base64") or artifacts[0].get("b64_encoded_image")
+    if not raw_b64:
         return jsonify(error="No base64 image in artifacts"), 500
+    clean_b64 = "".join(raw_b64.split())
 
     # Wrap in data URI
-    data_uri = f"data:image/png;base64,{b64}"
+    data_uri = f"data:image/png;base64,{clean_b64}"
+    print("[Stability] returning data URI snippet:", data_uri[:50], "...")
+
     return jsonify(imageUrl=data_uri)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-
-
 

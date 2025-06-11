@@ -6,9 +6,11 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
+# Load API keys from environment
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 
+# API endpoints
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 STABILITY_API_URL = "https://api.stability.ai/v2beta/stable-image/generate/core"
 
@@ -52,7 +54,6 @@ def generate_image():
     if not prompt:
         return jsonify(error="Missing prompt"), 400
 
-    # Construct JSON payload for Stability API
     payload = {
         "text_prompts": [{"text": prompt}],
         "cfg_scale": 7,
@@ -73,18 +74,30 @@ def generate_image():
         timeout=30
     )
 
+    # Debug log: inspect raw response
+    print("Stability API response:", res.status_code, res.text)
+
     if res.status_code != 200:
         return jsonify(error=res.text), 500
 
     result = res.json()
     artifacts = result.get("artifacts", [])
-    if not artifacts or not artifacts[0].get("url"):
-        return jsonify(error="No image returned"), 500
+    if not artifacts:
+        return jsonify(error="No artifacts returned"), 500
 
-    return jsonify(imageUrl=artifacts[0]["url"])
+    # Extract base64-encoded image
+    b64 = artifacts[0].get("base64") or artifacts[0].get("b64_encoded_image")
+    if not b64:
+        return jsonify(error="No base64 image in artifacts"), 500
+
+    # Wrap in data URI
+    data_uri = f"data:image/png;base64,{b64}"
+    return jsonify(imageUrl=data_uri)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
 
 
 

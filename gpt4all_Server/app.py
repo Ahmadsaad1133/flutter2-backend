@@ -56,13 +56,16 @@ def generate_image_from_story(story: str):
     if not prompt:
         return None, "Empty prompt for image generation."
 
-    options_payload = {
-        "prompt": prompt,
-        "cfg_scale": 7,
-        "samples": 1,
-        "width": 512,
-        "height": 512,
-        "steps": 50
+    # Prepare form data directly as multipart fields
+    form_data = {
+        "prompt": (None, prompt),
+        "model": (None, "core"),
+        "output_format": (None, "png"),
+        "cfg_scale": (None, "7"),
+        "samples": (None, "1"),
+        "width": (None, "512"),
+        "height": (None, "512"),
+        "steps": (None, "50")
     }
 
     res = requests.post(
@@ -71,10 +74,7 @@ def generate_image_from_story(story: str):
             "Authorization": f"Bearer {STABILITY_API_KEY}",
             "Accept": "application/json",
         },
-        files={
-            'init_image': (None, ''),  # required even if empty
-            'options': (None, json.dumps(options_payload), 'application/json'),
-        },
+        files=form_data,
         timeout=30
     )
 
@@ -86,7 +86,7 @@ def generate_image_from_story(story: str):
     if not artifacts:
         return None, "No artifacts returned from image generation."
 
-    raw_b64 = artifacts[0].get("base64") or artifacts[0].get("b64_encoded_image")
+    raw_b64 = artifacts[0].get("base64")
     if not raw_b64:
         return None, "No base64 image found in artifacts."
 

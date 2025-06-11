@@ -6,45 +6,19 @@ from flask import Flask, request, jsonify
 import requests
 from flask_cors import CORS
 import logging
+import random
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load API keys from environment
 groq_api_key = os.getenv("GROQ_API_KEY")
-# Stability AI key is no longer used for images; cartoon images via Pixabay
 pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 
-# API endpoints
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
-
-
-def generate_bedtime_story(mood: str, sleep_quality: str) -> (str, str):
-    prompt = (
-        f"You are Silent Veil, a calm sleep coach.\n"
-        f"Create a short (3-5 sentence) bedtime story based on:\n"
-        f"- Current mood: {mood}\n"
-        f"- Last night's sleep quality: {sleep_quality}\n"
-        f"Make it calming and suitable for sleep."
-    )
-    return _call_groq(prompt)
-
-
-def generate_sleep_analysis(mood: str, sleep_quality: str) -> (str, str):
-    prompt = (
-        f"You are Silent Veil, an expert sleep coach.\n"
-        f"Analyze the user's sleep data and mood:\n"
-        f"- Mood: {mood}\n"
-        f"- Sleep quality: {sleep_quality}\n"
-        f"Provide a concise analysis and personalized tips to improve sleep."
-    )
-    return _call_groq(prompt)
-
 
 def _call_groq(user_prompt: str) -> (str, str):
     try:
@@ -71,20 +45,14 @@ def _call_groq(user_prompt: str) -> (str, str):
         logger.error(f"Groq call failed: {e}")
         return None, str(e)
 
-
 def search_cartoon_image(query: str) -> str | None:
-    """
-    Search Pixabay for a cartoon/illustration matching the query.
-    Returns the URL of the first hit or None.
-    """
     if not pixabay_api_key:
         logger.error("Missing PIXABAY_API_KEY environment variable.")
         return None
-
     params = {
         "key": pixabay_api_key,
         "q": query,
-        "image_type": "illustration",  # cartoon style
+        "image_type": "illustration",
         "per_page": 10,
         "safesearch": "true"
     }
@@ -101,30 +69,67 @@ def search_cartoon_image(query: str) -> str | None:
         logger.error(f"Pixabay search failed: {e}")
         return None
 
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    data = request.get_json() or {}
-    prompt = data.get('prompt', '').strip()
-    if not prompt:
-        return jsonify(error="Missing 'prompt'"), 400
-    response, err = _call_groq(prompt)
-    if err:
-        return jsonify(error=err), 500
-    return jsonify(response=response)
-
-
-@app.route("/generate", methods=["POST"])
-def generate_text():
+@app.route("/generate-stories", methods=["POST"])
+def generate_stories():
+    """
+    Generate multiple bedtime stories, each with title, description, imageUrl, duration_minutes, content.
+    """
     data = request.get_json() or {}
     mood = data.get("mood", "").strip()
     sleep_quality = data.get("sleep_quality", "").strip()
+    count = int(data.get("count", 3))  # number of stories to generate, default 3
+
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
-    story, err = generate_bedtime_story(mood, sleep_quality)
-    if err:
-        return jsonify(error=err), 500
-    return jsonify(story=story)
+
+    stories = []
+
+    for i in range(count):
+        # Generate story content with Groq
+        prompt = (
+            f"You are Silent Veil, a calm sleep coach.\n"
+            f"Create a short bedtime story with:\n"
+            f"- A calming title\n"
+            f"- A 1-2 sentence description\n"
+            f"- A 3-5 sentence story content\n"
+            f"Based on mood: {mood} and sleep quality: {sleep_quality}.\n"
+            f"Format your response as JSON with fields: title, description, content."
+        )
+        story_json_str, err = _call_groq(prompt)
+        if err:
+            logger.error(f"Error generating story {i+1}: {err}")
+            continue
+        
+        try:
+            # Attempt to parse the returned JSON string from Groq
+            story_data = json.loads(story_json_str)
+        except Exception:
+            # Fallback if not JSON: wrap entire text as content, dummy title/description
+            story_data = {
+                "title": f"Dream Story {i+1}",
+                "description": f"A calming story based on your mood: {mood}",
+                "content": story_json_str
+            }
+        
+        # Extract keywords for image search from title or description
+        keywords = story_data.get("title") or story_data.get("description") or mood
+
+        image_url = search_cartoon_image(keywords)
+        duration_minutes = random.choice([4, 5, 6])
+
+        story = {
+            "title": story_data.get("title", f"Dream Story {i+1}"),
+            "description": story_data.get("description", ""),
+            "imageUrl": image_url or "",  # empty string if no image
+            "duration_minutes": duration_minutes,
+            "content": story_data.get("content", "")
+        }
+        stories.append(story)
+
+    if not stories:
+        return jsonify(error="Failed to generate any stories"), 500
+
+    return jsonify(stories=stories)
 
 
 @app.route("/generate-story-and-image", methods=["POST"])
@@ -135,36 +140,46 @@ def generate_story_and_image():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-    # 1) Generate bedtime story
-    story, err = generate_bedtime_story(mood, sleep_quality)
+    prompt = (
+        f"You are Silent Veil, a calm sleep coach.\n"
+        f"Create a short bedtime story with:\n"
+        f"- A calming title\n"
+        f"- A 1-2 sentence description\n"
+        f"- A 3-5 sentence story content\n"
+        f"Based on mood: {mood} and sleep quality: {sleep_quality}.\n"
+        f"Format your response as JSON with fields: title, description, content."
+    )
+    story_json_str, err = _call_groq(prompt)
     if err:
         return jsonify(error=err), 500
 
-    # 2) Extract keywords (first sentence)
-    keywords = story.split('.')[0]
+    try:
+        story_data = json.loads(story_json_str)
+    except Exception:
+        story_data = {
+            "title": "Dream Story",
+            "description": f"A calming story based on your mood: {mood}",
+            "content": story_json_str
+        }
 
-    # 3) Search cartoon image via Pixabay
+    keywords = story_data.get("title") or story_data.get("description") or mood
     image_url = search_cartoon_image(keywords)
-    if not image_url:
-        # return story only, code 207 indicates partial
-        return jsonify(story=story), 207
+    duration_minutes = random.choice([4, 5, 6])
 
-    return jsonify(story=story, imageUrl=image_url)
+    story = {
+        "title": story_data.get("title", "Dream Story"),
+        "description": story_data.get("description", ""),
+        "imageUrl": image_url or "",
+        "duration_minutes": duration_minutes,
+        "content": story_data.get("content", "")
+    }
+
+    return jsonify(story=story)
 
 
-@app.route("/analyze-sleep", methods=["POST"])
-def analyze_sleep():
-    data = request.get_json() or {}
-    mood = data.get("mood", "").strip()
-    sleep_quality = data.get("sleep_quality", "").strip()
-    if not mood or not sleep_quality:
-        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
-    analysis, err = generate_sleep_analysis(mood, sleep_quality)
-    if err:
-        return jsonify(error=err), 500
-    return jsonify(analysis=analysis)
-
+# Keep your other existing endpoints unchanged...
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+

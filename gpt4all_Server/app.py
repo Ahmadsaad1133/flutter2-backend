@@ -32,11 +32,7 @@ def extract_text(value):
 def _call_groq(user_prompt: str) -> (str, str):
     try:
         messages = [
-            {"role": "system", "content": (
-                "You are Silent Veil, a compassionate and skilled sleep coach who acts like a dream therapist. "
-                "You help users fall asleep by creating calming, deeply relaxing bedtime stories tailored to their emotional and physical state. "
-                "Every story should feel therapeutic, imaginative, and lull the user into rest."
-            )},
+            {"role": "system", "content": "You are Silent Veil, a calm sleep coach assistant."},
             {"role": "user", "content": user_prompt}
         ]
         payload = {
@@ -56,7 +52,6 @@ def _call_groq(user_prompt: str) -> (str, str):
             return None, f"Groq API error: {res.status_code}"
         data = res.json()
         content = data.get("choices", [])[0].get("message", {}).get("content")
-        logger.debug(f"Groq raw content: {content}")
         if not content:
             return None, "Empty response from Groq"
         return content.strip(), None
@@ -74,8 +69,8 @@ def clean_json_output(json_text: str) -> dict:
         return parsed
     except Exception:
         return {
-            "title": None,
-            "description": "",
+            "title": "Oneiric Dream",
+            "description": "A calm bedtime story.",
             "content": json_text
         }
 
@@ -116,36 +111,30 @@ def generate_stories():
     stories = []
     seen_titles = set()
 
-    prompt_base = (
-        f"A user is feeling '{mood}' and reports their sleep quality as '{sleep_quality}'. "
-        "You are a dream therapist helping them fall asleep. "
-        "Write a magical, calming, 5-minute bedtime story designed to ease them into sleep. "
-        "Every story should be totally original, using a unique setting, calming tone, and gentle pacing. "
-        "Avoid using repeated titles like 'Oneiric Dream'. "
-        "Respond strictly in JSON with the following fields (strings only): title, description, content."
-    )
-
     for i in range(count):
-        prompt = f"{prompt_base} This is story #{i+1}. Make it unique and healing."
+        prompt = (
+            f"You are Silent Veil, a calm sleep coach. Based solely on the user's mood '{mood}' "
+            f"and sleep quality '{sleep_quality}', create a unique bedtime story #{i+1}. "
+            "Ensure the story has a completely original and distinct **title** that has not been used in previous stories. "
+            "Each story must have a unique setting, different characters, and a varied emotional tone. "
+            "Avoid reusing any structure, names, or phrases. "
+            "Format the output as flat JSON with fields: title, description, content. "
+            "All values must be plain strings. No markdown or nested data."
+        )
+
         story_json_str, err = _call_groq(prompt)
         story_data = clean_json_output(story_json_str or "")
 
-        raw_title = extract_text(story_data.get("title")).strip()
-        if not raw_title or raw_title.lower() == "oneiric dream":
-            raw_title = f"Dream #{i+1} - {mood.title()}"
-
+        raw_title = extract_text(story_data.get("title", f"Oneiric Journey #{i+1}")).strip()
         unique_title = raw_title
-        suffix = 1
+        suffix = 2
         while unique_title in seen_titles:
-            suffix += 1
             unique_title = f"{raw_title} ({suffix})"
+            suffix += 1
         seen_titles.add(unique_title)
 
         description = extract_text(story_data.get("description", "")).strip()
         content = extract_text(story_data.get("content", "")).strip()
-        if not content or "{" in content:  # probably malformed JSON
-            content = "No content available. Please try again."
-
         image_url = search_cartoon_image(unique_title or mood) or ""
         duration = random.choice([4, 5, 6])
 
@@ -171,23 +160,16 @@ def generate_story_and_image():
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
     prompt = (
-        f"A user is experiencing mood '{mood}' and reports sleep quality '{sleep_quality}'. "
-        "You are a sleep therapist crafting a personal bedtime story to help them rest. "
-        "Write a story that is gentle, comforting, and imaginative. "
-        "Respond in JSON with fields: title, description, content (all as strings)."
+        f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
+        "create a calming, unique bedtime story. Respond in JSON with title, description, and plain natural language content. "
+        "All fields must be plain strings. Do not return code, markdown, or nested objects."
     )
     story_json_str, err = _call_groq(prompt)
     story_data = clean_json_output(story_json_str or "")
 
-    title = extract_text(story_data.get("title", f"{mood.title()} Dream")).strip()
-    if not title or title.lower() == "oneiric dream":
-        title = f"{mood.title()} Dream"
-
+    title = extract_text(story_data.get("title", "Oneiric Dream")).strip()
     description = extract_text(story_data.get("description", "")).strip()
     content = extract_text(story_data.get("content", "")).strip()
-    if not content or "{" in content:
-        content = "No content available. Please try again."
-
     image_url = search_cartoon_image(title or mood) or ""
     duration = random.choice([4, 5, 6])
 

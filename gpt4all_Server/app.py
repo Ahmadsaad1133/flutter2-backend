@@ -16,6 +16,9 @@ STABILITY_API_URL = "https://api.stability.ai/v2beta/stable-image/generate/core"
 def generate_text():
     data = request.get_json()
     prompt = data.get("prompt", "")
+    if not prompt:
+        return jsonify(error="Missing prompt"), 400
+
     messages = [
         {"role": "system", "content": "You are Silent Veil, a calm sleep coach."},
         {"role": "user", "content": prompt}
@@ -48,16 +51,18 @@ def generate_image():
     if not prompt:
         return jsonify(error="Missing prompt"), 400
 
+    payload = {
+        "prompt": prompt,
+        "output_format": "png"
+    }
+
     res = requests.post(
         STABILITY_API_URL,
         headers={
             "Authorization": f"Bearer {STABILITY_API_KEY}",
             "Content-Type": "application/json"
         },
-        json={
-            "prompt": prompt,
-            "output_format": "png"
-        },
+        json=payload,
         timeout=30
     )
 
@@ -73,3 +78,4 @@ def generate_image():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+

@@ -14,8 +14,8 @@ STABILITY_API_URL = "https://api.stability.ai/v2beta/stable-image/generate/core"
 
 @app.route("/generate", methods=["POST"])
 def generate_text():
-    data = request.get_json()
-    prompt = data.get("prompt", "")
+    data = request.get_json() or {}
+    prompt = data.get("prompt", "").strip()
     if not prompt:
         return jsonify(error="Missing prompt"), 400
 
@@ -42,32 +42,36 @@ def generate_text():
     if res.status_code != 200:
         return jsonify(error=res.text), 500
 
-    return jsonify(response=res.json()["choices"][0]["message"]["content"])
-
+    content = res.json().get("choices", [])[0].get("message", {}).get("content")
+    return jsonify(response=content)
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
-    data = request.get_json()
-    prompt = data.get("prompt", "")
+    data = request.get_json() or {}
+    prompt = data.get("prompt", "").strip()
     if not prompt:
         return jsonify(error="Missing prompt"), 400
 
-    # Use multipart/form-data as Stability API requires
-    files = {
-        'prompt': (None, prompt),
-        'output_format': (None, 'png'),
-    }
-
-    headers = {
-        "Authorization": f"Bearer {STABILITY_API_KEY}",
-        "Accept": "application/json"
-        # Do not set Content-Type, requests will handle multipart boundary automatically
+    # Construct JSON payload for Stability API
+    payload = {
+        "text_prompts": [
+            {"text": prompt}
+        ],
+        "cfg_scale": 7,
+        "samples": 1,
+        "width": 512,
+        "height": 512,
+        "steps": 50
     }
 
     res = requests.post(
         STABILITY_API_URL,
-        headers=headers,
-        files=files,
+        headers={
+            "Authorization": f"Bearer {STABILITY_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        },
+        json=payload,
         timeout=30
     )
 
@@ -75,12 +79,11 @@ def generate_image():
         return jsonify(error=res.text), 500
 
     result = res.json()
-    image_url = result.get("artifacts", [{}])[0].get("url")
-    if not image_url:
+    artifacts = result.get("artifacts", [])
+    if not artifacts or not artifacts[0].get("url"):
         return jsonify(error="No image returned"), 500
 
-    return jsonify(imageUrl=image_url)
-
+    return jsonify(imageUrl=artifacts[0]["url"])
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))

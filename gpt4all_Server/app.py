@@ -74,8 +74,7 @@ def search_cartoon_image(query: str) -> str | None:
         hits = resp.json().get("hits", [])
         if not hits:
             return None
-        choice = random.choice(hits)
-        return choice.get("webformatURL")
+        return random.choice(hits).get("webformatURL")
     except Exception as e:
         logger.error(f"Pixabay search failed: {e}")
         return None
@@ -91,57 +90,60 @@ def generate_stories():
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
     stories = []
-    seen_titles = set()  # Track to ensure title uniqueness
+    seen_titles = set()
 
     uniqueness_instruction = (
         "Ensure each story has a distinct title, setting, characters, and atmosphere. "
-        "Do not repeat titles or plot elements across stories."
+        "Do not repeat any titles or story elements across the batch."
     )
 
     for i in range(count):
         prompt = (
-            f"Based solely on the user's input (mood: {mood}, sleep quality: {sleep_quality}), "
-            f"create bedtime story number {i+1}. {uniqueness_instruction} "
-            "Format output as JSON with: title (short calming), description (1-2 sentences), content (3-5 sentences)."
+            f"You are Silent Veil, a calm sleep coach. Based solely on the user's mood '{mood}' "
+            f"and sleep quality '{sleep_quality}', create bedtime story #{i+1}. {uniqueness_instruction} "
+            "Respond in strict JSON with fields: title, description, content."
         )
         story_json_str, err = _call_groq(prompt)
+        # Attempt JSON parse
+        if not err:
+            try:
+                story_data = json.loads(story_json_str)
+            except Exception:
+                err = "Invalid JSON"
         if err:
-            logger.error(f"Error generating story {i+1}: {err}")
-            continue
-        try:
-            story_data = json.loads(story_json_str)
-        except Exception:
+            logger.warning(f"Story {i+1} parse error ({err}), applying fallback title.")
             story_data = {
                 "title": f"Dream Story {i+1}",
-                "description": f"A calming story based on your mood: {mood}",
-                "content": story_json_str
+                "description": f"A calming bedtime tale tailored to your mood: {mood}.",
+                "content": story_json_str or ""
             }
 
-        # Extract and enforce unique title
-        raw_title = extract_text(story_data.get("title", f"Dream Story {i+1}"))
-        title = raw_title
-        if title in seen_titles:
-            title = f"{raw_title} ({i+1})"
-        seen_titles.add(title)
+        raw_title = extract_text(story_data.get("title", "")).strip()
+        if not raw_title:
+            raw_title = f"Dream Story {i+1}"
+        # Normalize and enforce uniqueness
+        unique_title = raw_title
+        suffix = 1
+        while unique_title in seen_titles:
+            suffix += 1
+            unique_title = f"{raw_title} ({suffix})"
+        seen_titles.add(unique_title)
 
-        description = extract_text(story_data.get("description", ""))
-        content = extract_text(story_data.get("content", ""))
+        description = extract_text(story_data.get("description", "")).strip()
+        content = extract_text(story_data.get("content", "")).strip()
+        image_url = search_cartoon_image(unique_title or mood) or ""
+        duration = random.choice([4, 5, 6])
 
-        keywords = title or description or mood
-        image_url = search_cartoon_image(keywords)
-        duration_minutes = random.choice([4, 5, 6])
-
-        story = {
-            "title": title,
+        stories.append({
+            "title": unique_title,
             "description": description,
             "content": content,
-            "imageUrl": image_url or "",
-            "durationMinutes": duration_minutes
-        }
-        stories.append(story)
+            "imageUrl": image_url,
+            "durationMinutes": duration
+        })
 
     if not stories:
-        return jsonify(error="Failed to generate any stories"), 500
+        return jsonify(error="Failed to generate stories"), 500
 
     return jsonify(stories=stories)
 
@@ -153,12 +155,9 @@ def generate_story_and_image():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-    uniqueness_instruction = (
-        "Ensure the story has a unique title and content based entirely on the user's input."
-    )
     prompt = (
-        f"Based solely on the user's input (mood: {mood}, sleep quality: {sleep_quality}), "
-        f"{uniqueness_instruction} Format output as JSON with title, description, content."
+        f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
+        "create a calming bedtime story. Respond in JSON with title, description, content."
     )
     story_json_str, err = _call_groq(prompt)
     if err:
@@ -169,27 +168,23 @@ def generate_story_and_image():
     except Exception:
         story_data = {
             "title": "Dream Story",
-            "description": f"A calming story based on your mood: {mood}",
-            "content": story_json_str
+            "description": f"A calming bedtime tale tailored to your mood: {mood}.",
+            "content": story_json_str or ""
         }
 
-    title = extract_text(story_data.get("title", "Dream Story"))
-    description = extract_text(story_data.get("description", ""))
-    content = extract_text(story_data.get("content", ""))
+    title = extract_text(story_data.get("title", "")).strip() or "Dream Story"
+    description = extract_text(story_data.get("description", "")).strip()
+    content = extract_text(story_data.get("content", "")).strip()
+    image_url = search_cartoon_image(title or mood) or ""
+    duration = random.choice([4, 5, 6])
 
-    keywords = title or description or mood
-    image_url = search_cartoon_image(keywords)
-    duration_minutes = random.choice([4, 5, 6])
-
-    story = {
+    return jsonify({
         "title": title,
         "description": description,
         "content": content,
-        "imageUrl": image_url or "",
-        "durationMinutes": duration_minutes
-    }
-
-    return jsonify(story=story)
+        "imageUrl": image_url,
+        "durationMinutes": duration
+    })
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))

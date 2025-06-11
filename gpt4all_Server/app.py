@@ -44,6 +44,7 @@ def generate_text():
 
     return jsonify(response=res.json()["choices"][0]["message"]["content"])
 
+
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.get_json()
@@ -51,18 +52,22 @@ def generate_image():
     if not prompt:
         return jsonify(error="Missing prompt"), 400
 
-    payload = {
-        "prompt": prompt,
-        "output_format": "png"
+    # Use multipart/form-data as Stability API requires
+    files = {
+        'prompt': (None, prompt),
+        'output_format': (None, 'png'),
+    }
+
+    headers = {
+        "Authorization": f"Bearer {STABILITY_API_KEY}",
+        "Accept": "application/json"
+        # Do not set Content-Type, requests will handle multipart boundary automatically
     }
 
     res = requests.post(
         STABILITY_API_URL,
-        headers={
-            "Authorization": f"Bearer {STABILITY_API_KEY}",
-            "Content-Type": "application/json"
-        },
-        json=payload,
+        headers=headers,
+        files=files,
         timeout=30
     )
 
@@ -75,6 +80,7 @@ def generate_image():
         return jsonify(error="No image returned"), 500
 
     return jsonify(imageUrl=image_url)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))

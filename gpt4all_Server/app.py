@@ -57,7 +57,7 @@ def generate_image_from_story(story: str):
         return None, "Empty prompt for image generation."
 
     options_payload = {
-        "text_prompts": [{"text": prompt}],
+        "prompt": prompt,
         "cfg_scale": 7,
         "samples": 1,
         "width": 512,
@@ -69,11 +69,11 @@ def generate_image_from_story(story: str):
         STABILITY_API_URL,
         headers={
             "Authorization": f"Bearer {STABILITY_API_KEY}",
-            "Accept": "application/json"
+            "Accept": "application/json",
         },
         files={
-            "init_image": (None, ""),
-            "options": (None, json.dumps(options_payload), "application/json")
+            'init_image': (None, ''),  # required even if empty
+            'options': (None, json.dumps(options_payload), 'application/json'),
         },
         timeout=30
     )
@@ -120,12 +120,10 @@ def generate_story_and_image():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-    # Generate story
     story, err = generate_bedtime_story(mood, sleep_quality)
     if err:
         return jsonify(error=err), 500
 
-    # Generate image based on story
     image_url, err = generate_image_from_story(story)
     if err:
         return jsonify(error=err), 500
@@ -136,6 +134,7 @@ def generate_story_and_image():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 

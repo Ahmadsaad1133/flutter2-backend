@@ -68,7 +68,7 @@ def generate_image():
         STABILITY_API_URL,
         headers={
             "Authorization": f"Bearer {STABILITY_API_KEY}",
-            # This endpoint requires multipart/form-data, not application/json
+            "Accept": "application/json"  # <-- Important fix here
         },
         files={
             'init_image': (None, ''),  # required field placeholder
@@ -100,4 +100,5 @@ def generate_image():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 

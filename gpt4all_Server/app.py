@@ -1,5 +1,3 @@
-# backend/app.py
-
 import json
 import os
 from flask import Flask, request, jsonify
@@ -19,6 +17,17 @@ pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
+
+def extract_text(value):
+    if isinstance(value, str):
+        return value
+    elif isinstance(value, dict):
+        for key in ['text', 'content', 'en', 'value']:
+            if key in value and isinstance(value[key], str):
+                return value[key]
+        return json.dumps(value)
+    else:
+        return str(value) if value is not None else ''
 
 def _call_groq(user_prompt: str) -> (str, str):
     try:
@@ -72,7 +81,7 @@ def search_cartoon_image(query: str) -> str | None:
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
     """
-    Generate multiple bedtime stories, each with title, description, imageUrl, duration_minutes, content.
+    Generate multiple bedtime stories, each with title, description, imageUrl, durationMinutes, content.
     """
     data = request.get_json() or {}
     mood = data.get("mood", "").strip()
@@ -85,7 +94,6 @@ def generate_stories():
     stories = []
 
     for i in range(count):
-        # Generate story content with Groq
         prompt = (
             f"You are Silent Veil, a calm sleep coach.\n"
             f"Create a short bedtime story with:\n"
@@ -101,28 +109,24 @@ def generate_stories():
             continue
         
         try:
-            # Attempt to parse the returned JSON string from Groq
             story_data = json.loads(story_json_str)
         except Exception:
-            # Fallback if not JSON: wrap entire text as content, dummy title/description
             story_data = {
                 "title": f"Dream Story {i+1}",
                 "description": f"A calming story based on your mood: {mood}",
                 "content": story_json_str
             }
-        
-        # Extract keywords for image search from title or description
-        keywords = story_data.get("title") or story_data.get("description") or mood
 
+        keywords = extract_text(story_data.get("title")) or extract_text(story_data.get("description")) or mood
         image_url = search_cartoon_image(keywords)
         duration_minutes = random.choice([4, 5, 6])
 
         story = {
-            "title": story_data.get("title", f"Dream Story {i+1}"),
-            "description": story_data.get("description", ""),
-            "imageUrl": image_url or "",  # empty string if no image
-            "duration_minutes": duration_minutes,
-            "content": story_data.get("content", "")
+            "title": extract_text(story_data.get("title", f"Dream Story {i+1}")),
+            "description": extract_text(story_data.get("description", "")),
+            "imageUrl": image_url or "",
+            "durationMinutes": duration_minutes,
+            "content": extract_text(story_data.get("content", ""))
         }
         stories.append(story)
 
@@ -162,24 +166,23 @@ def generate_story_and_image():
             "content": story_json_str
         }
 
-    keywords = story_data.get("title") or story_data.get("description") or mood
+    keywords = extract_text(story_data.get("title")) or extract_text(story_data.get("description")) or mood
     image_url = search_cartoon_image(keywords)
     duration_minutes = random.choice([4, 5, 6])
 
     story = {
-        "title": story_data.get("title", "Dream Story"),
-        "description": story_data.get("description", ""),
+        "title": extract_text(story_data.get("title", "Dream Story")),
+        "description": extract_text(story_data.get("description", "")),
         "imageUrl": image_url or "",
-        "duration_minutes": duration_minutes,
-        "content": story_data.get("content", "")
+        "durationMinutes": duration_minutes,
+        "content": extract_text(story_data.get("content", ""))
     }
 
     return jsonify(story=story)
 
 
-# Keep your other existing endpoints unchanged...
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 

@@ -54,21 +54,6 @@ def _call_groq(user_prompt: str) -> (str, str):
         logger.error(f"Groq call failed: {e}")
         return None, str(e)
 
-def clean_json_output(json_text: str) -> dict:
-    try:
-        parsed = json.loads(json_text)
-        if isinstance(parsed, dict):
-            content = parsed.get("content", "")
-            if isinstance(content, dict):
-                parsed["content"] = json.dumps(content, indent=2)
-        return parsed
-    except Exception:
-        return {
-            "title": "Oneiric Dream",
-            "description": "A calm bedtime story.",
-            "content": json_text
-        }
-
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         logger.error("Missing PIXABAY_API_KEY environment variable.")
@@ -108,8 +93,8 @@ def generate_stories():
 
     uniqueness_instruction = (
         "Ensure each story has a distinct, original, creative title, setting, characters, and mood. "
-        "Do not reuse or repeat any wording, titles, or structure across stories. Format output as JSON with string values only. "
-        "Avoid nested JSON or code-like syntax in the 'content' field."
+        "Do not reuse or repeat any wording, titles, or structure across stories. Respond in JSON format, "
+        "but do not wrap content field in JSON — make it plain natural language only."
     )
 
     for i in range(count):
@@ -119,9 +104,22 @@ def generate_stories():
             "Output fields: title, description, content."
         )
         story_json_str, err = _call_groq(prompt)
-        story_data = clean_json_output(story_json_str or "")
+        if not err:
+            try:
+                story_data = json.loads(story_json_str)
+            except Exception:
+                err = "Invalid JSON"
+        if err:
+            logger.warning(f"Story {i+1} parse error ({err}), applying fallback title.")
+            story_data = {
+                "title": f"Oneiric Journey #{i+1}",
+                "description": f"A calming bedtime tale inspired by mood '{mood}'.",
+                "content": story_json_str or ""
+            }
 
-        raw_title = extract_text(story_data.get("title", f"Oneiric Journey #{i+1}")).strip()
+        raw_title = extract_text(story_data.get("title", "")).strip()
+        if not raw_title:
+            raw_title = f"Oneiric Journey #{i+1}"
         unique_title = raw_title
         suffix = 1
         while unique_title in seen_titles:
@@ -157,12 +155,22 @@ def generate_story_and_image():
 
     prompt = (
         f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
-        "create a calming, unique bedtime story. Respond in JSON with title, description, and plain natural language content."
+        "create a calming, unique bedtime story. Respond in JSON with title, description, and natural language content (no JSON inside content)."
     )
     story_json_str, err = _call_groq(prompt)
-    story_data = clean_json_output(story_json_str or "")
+    if err:
+        return jsonify(error=err), 500
 
-    title = extract_text(story_data.get("title", "Oneiric Dream")).strip()
+    try:
+        story_data = json.loads(story_json_str)
+    except Exception:
+        story_data = {
+            "title": "Oneiric Dream",
+            "description": f"A calming bedtime tale inspired by mood: {mood}.",
+            "content": story_json_str or ""
+        }
+
+    title = extract_text(story_data.get("title", "")).strip() or "Oneiric Dream"
     description = extract_text(story_data.get("description", "")).strip()
     content = extract_text(story_data.get("content", "")).strip()
     image_url = search_cartoon_image(title or mood) or ""
@@ -179,5 +187,4 @@ def generate_story_and_image():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
 

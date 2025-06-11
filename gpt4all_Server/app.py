@@ -35,7 +35,7 @@ def _call_groq(user_prompt: str) -> (str, str):
             {"role": "system", "content": "You are Silent Veil, a calm sleep coach assistant."},
             {"role": "user", "content": user_prompt}
         ]
-        payload = {"model": "llama3-70b-8192", "messages": messages, "temperature": 0.8, "max_tokens": 500}
+        payload = {"model": "llama3-70b-8192", "messages": messages, "temperature": 0.95, "max_tokens": 600}
         res = requests.post(
             GROQ_API_URL,
             headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
@@ -54,7 +54,6 @@ def _call_groq(user_prompt: str) -> (str, str):
         logger.error(f"Groq call failed: {e}")
         return None, str(e)
 
-# Enhanced image search for variety
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         logger.error("Missing PIXABAY_API_KEY environment variable.")
@@ -93,18 +92,17 @@ def generate_stories():
     seen_titles = set()
 
     uniqueness_instruction = (
-        "Ensure each story has a distinct title, setting, characters, and atmosphere. "
-        "Do not repeat any titles or story elements across the batch."
+        "Ensure each story has a distinct, original, creative title, setting, characters, and mood. "
+        "Do not reuse or repeat any wording, titles, or structure across stories."
     )
 
     for i in range(count):
         prompt = (
             f"You are Silent Veil, a calm sleep coach. Based solely on the user's mood '{mood}' "
-            f"and sleep quality '{sleep_quality}', create bedtime story #{i+1}. {uniqueness_instruction} "
+            f"and sleep quality '{sleep_quality}', create a unique bedtime story #{i+1}. {uniqueness_instruction} "
             "Respond in strict JSON with fields: title, description, content."
         )
         story_json_str, err = _call_groq(prompt)
-        # Attempt JSON parse
         if not err:
             try:
                 story_data = json.loads(story_json_str)
@@ -113,15 +111,14 @@ def generate_stories():
         if err:
             logger.warning(f"Story {i+1} parse error ({err}), applying fallback title.")
             story_data = {
-                "title": f"Dream Story {i+1}",
-                "description": f"A calming bedtime tale tailored to your mood: {mood}.",
+                "title": f"Oneiric Journey #{i+1}",
+                "description": f"A calming bedtime tale inspired by mood '{mood}'.",
                 "content": story_json_str or ""
             }
 
         raw_title = extract_text(story_data.get("title", "")).strip()
         if not raw_title:
-            raw_title = f"Dream Story {i+1}"
-        # Normalize and enforce uniqueness
+            raw_title = f"Oneiric Journey #{i+1}"
         unique_title = raw_title
         suffix = 1
         while unique_title in seen_titles:
@@ -157,7 +154,7 @@ def generate_story_and_image():
 
     prompt = (
         f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
-        "create a calming bedtime story. Respond in JSON with title, description, content."
+        "create a calming, unique bedtime story. Respond in JSON with title, description, content."
     )
     story_json_str, err = _call_groq(prompt)
     if err:
@@ -167,12 +164,12 @@ def generate_story_and_image():
         story_data = json.loads(story_json_str)
     except Exception:
         story_data = {
-            "title": "Dream Story",
-            "description": f"A calming bedtime tale tailored to your mood: {mood}.",
+            "title": "Oneiric Dream",
+            "description": f"A calming bedtime tale inspired by mood: {mood}.",
             "content": story_json_str or ""
         }
 
-    title = extract_text(story_data.get("title", "")).strip() or "Dream Story"
+    title = extract_text(story_data.get("title", "")).strip() or "Oneiric Dream"
     description = extract_text(story_data.get("description", "")).strip()
     content = extract_text(story_data.get("content", "")).strip()
     image_url = search_cartoon_image(title or mood) or ""
@@ -189,6 +186,5 @@ def generate_story_and_image():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
 
 

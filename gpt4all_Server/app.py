@@ -103,7 +103,7 @@ def generate_stories():
     data = request.get_json() or {}
     mood = data.get("mood", "").strip()
     sleep_quality = data.get("sleep_quality", "").strip()
-    count = int(data.get("count", 3))
+    count = int(data.get("count", 5))
 
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400

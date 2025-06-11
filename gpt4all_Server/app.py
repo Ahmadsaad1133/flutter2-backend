@@ -67,14 +67,15 @@ def generate_image():
         STABILITY_API_URL,
         headers={
             "Authorization": f"Bearer {STABILITY_API_KEY}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
+            # This endpoint requires multipart/form-data, not application/json
         },
-        json=payload,
+        files={
+            'init_image': (None, ''),  # required field placeholder
+            'options': (None, json.dumps(payload), 'application/json')
+        },
         timeout=30
     )
 
-    # Log status and raw response for debugging
     print("[Stability] status:", res.status_code)
     print("[Stability] body snippet:", res.text[:200])
 
@@ -86,16 +87,13 @@ def generate_image():
     if not artifacts:
         return jsonify(error="No artifacts returned"), 500
 
-    # Extract base64 string and strip whitespace/newlines
     raw_b64 = artifacts[0].get("base64") or artifacts[0].get("b64_encoded_image")
     if not raw_b64:
         return jsonify(error="No base64 image in artifacts"), 500
     clean_b64 = "".join(raw_b64.split())
-
-    # Wrap in data URI
     data_uri = f"data:image/png;base64,{clean_b64}"
-    print("[Stability] returning data URI snippet:", data_uri[:50], "...")
 
+    print("[Stability] returning data URI snippet:", data_uri[:50], "...")
     return jsonify(imageUrl=data_uri)
 
 if __name__ == "__main__":

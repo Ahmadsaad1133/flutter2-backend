@@ -48,7 +48,7 @@ class MoodAnalyzer:
 THERAPY_INSTRUCTIONS = {
     "anger": {"english": "I see you're feeling angry...", "arabic": "أرى أنك غاضب..."},
     "sadness": {"english": "I see you're feeling sad...", "arabic": "أشعر أنك حزين..."},
-    "stress": {"english": "I see you're stressed...", "arabic": "الوحدة صعبة..."},
+    "stress": {"english": "I see you're stressed...", "arabic": "أشعر أنك متوتر..."},
     "lonely": {"english": "Feeling lonely is hard...", "arabic": "الوحدة صعبة..."},
     "sexual": {"english": "Let's redirect those thoughts...", "arabic": "دعنا نحول هذه المشاعر..."},
     "general": {"english": "You're looking for a calming bedtime story...", "arabic": "تبحث عن قصة هادئة تساعدك على النوم..."},
@@ -60,8 +60,10 @@ SYSTEM_PERSONAS = {
 }
 
 # Utilities
+
 def extract_text(value):
-    if isinstance(value, str): return value
+    if isinstance(value, str):
+        return value
     if isinstance(value, dict):
         for key in ("text", "content", "en", "value"):
             if key in value and isinstance(value[key], str):
@@ -95,7 +97,13 @@ def _call_groq(messages: list) -> tuple[str, str]:
 
 def clean_json_output(raw_text: str, language: str) -> dict:
     if language == "arabic":
-        return {"story": raw_text.strip() or "قصة قبل النوم"}
+        text = raw_text.strip() or "قصة قبل النوم"
+        return {
+            "title": "قصة قبل النوم",
+            "description": "",
+            "content": text,
+            "story": text
+        }
     try:
         parsed = json.loads(raw_text)
         if isinstance(parsed, dict):
@@ -113,7 +121,7 @@ def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         return None
     lang = MoodAnalyzer.detect_language(query)
-    q = query if lang == 'english' else query  # use mood or title directly
+    q = query
     params = {"key": pixabay_api_key, "q": q, "image_type": "illustration", "per_page": 10, "safesearch": "true"}
     try:
         resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=10)
@@ -171,10 +179,10 @@ def generate_stories():
             suffix += 1
         seen.add(title)
         stories.append({
-            "title": title if language == "english" else "",
-            "description": parsed.get("description", "") if language == "english" else "",
-            "content": parsed.get("content", "") if language == "english" else "",
-            "story": parsed.get("story", "") if language == "arabic" else "",
+            "title": title if language == "english" else parsed.get("title",""),
+            "description": parsed.get("description", ""),
+            "content": parsed.get("content", ""),
+            "story": parsed.get("story", ""),
             "imageUrl": search_cartoon_image(title),
             "durationMinutes": random.choice([4, 5, 6])
         })
@@ -194,10 +202,10 @@ def generate_story_and_image():
         return jsonify(error=err), 500
     parsed = clean_json_output(raw, language)
     return jsonify({
-        "title": parsed.get("title", "") if language == "english" else "",
-        "description": parsed.get("description", "") if language == "english" else "",
-        "content": parsed.get("content", "") if language == "english" else "",
-        "story": parsed.get("story", "") if language == "arabic" else "",
+        "title": parsed.get("title", ""),
+        "description": parsed.get("description", ""),
+        "content": parsed.get("content", ""),
+        "story": parsed.get("story", ""),
         "imageUrl": search_cartoon_image(mood),
         "durationMinutes": random.choice([4, 5, 6])
     })

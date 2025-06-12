@@ -20,7 +20,7 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
 # -----------------------------------------------------------------------------
-# MoodAnalyzer class inlined to avoid import errors
+# MoodAnalyzer class inlined
 # -----------------------------------------------------------------------------
 class MoodAnalyzer:
     """
@@ -34,19 +34,19 @@ class MoodAnalyzer:
         ],
         "sadness": [
             "sad", "down", "unhappy", "depressed", "melancholy", "gloomy", "tearful", "despondent", "mournful", "blue",
-            "حزين", "كسول", "كئيب", "مكتئب", "متضايق", "مبكٍ", "محزون", "مثبط", "حنين", "مثلوم"
+            "حزين", "كسول", "كئيب", "مكتئب", "متضايق", "بكاء", "محزون", "مثبط", "وحيد القلب", "مكتئب جداً"
         ],
         "stress": [
             "stressed", "anxious", "nervous", "tense", "overwhelmed", "worried", "panicked", "frazzled", "restless", "uptight",
-            "متوتر", "قلق", "عصبي", "مجغول البال", "مرهق", "منهك", "مذعور", "مرتبك", "قلقان", "مضطرب"
+            "متوتر", "قلق", "منزعج", "مرهق", "منهك", "مذعور", "مرتبك", "قلقان", "مضطرب", "متحفز"
         ],
         "lonely": [
             "lonely", "alone", "isolated", "abandoned", "forsaken", "solitary", "lonesome", "secluded", "detached", "alienated",
-            "وحيد", "منعزل", "مهجور", "متروك", "منعزل تماماً", "منفرد", "مقصي", "معزول", "منفصل", "مغترب"
+            "وحيد", "منعزل", "مهجور", "متروك", "منفرد", "مقصي", "معزول", "منفصل", "مغترب", "منفرد جداً"
         ],
         "sexual": [
             "sexually frustrated", "sexual frustration", "libido", "erotic", "desire", "arousal", "sensual", "intimate", "lustful", "yearning",
-            "إحباط جنسي", "إثارة", "رغبة", "شهوة", "حسّي", "حميم", "منعش", "شهواني", "متحمس جنسياً", "شهوانية"
+            "إحباط جنسي", "إثارة", "رغبة جنسية", "شهوة", "حسّي", "حميمي", "شهواني", "تهيّج", "لذة", "حيوية"
         ]
     }
     GENERAL_CATEGORY = "general"
@@ -67,37 +67,37 @@ class MoodAnalyzer:
         return cls.GENERAL_CATEGORY, lang
 
 # -----------------------------------------------------------------------------
-# Therapeutic instructions by category
+# Therapeutic instructions by category (refined teacher Arabic)
 # -----------------------------------------------------------------------------
 THERAPY_INSTRUCTIONS = {
     "anger": {
         "english": "The user feels angry or frustrated—guide them through gentle breathing and calming imagery.",
-        "arabic": "المستخدم يشعر بالغضب أو الإحباط – قدّم له تمارين تنفس هادئة وصوراً مهدئة."
+        "arabic": "أرى أنك غاضب أو متأزم؛ دعنا نمارس معاً تنفساً عميقاً مع تخيل سماء هادئة وأمواج ناعمة."  
     },
     "sadness": {
         "english": "The user feels sad—infuse empathy, healing metaphors, and hope into the narrative.",
-        "arabic": "المستخدم يشعر بالحزن – أضف تعاطفاً واستعارات شفائية وأملاً في القصة."
+        "arabic": "أشعر بحزنك؛ سأروي لك قصة دافئة مفعمة بالتعاطف والاستعارات الشفائية لتعزيز الأمل في قلبك."  
     },
     "stress": {
         "english": "The user is stressed or anxious—include relaxation techniques like progressive muscle relaxation.",
-        "arabic": "المستخدم متوتر أو قلق – اشمل تقنيات الاسترخاء مثل الاسترخاء التدريجي للعضلات."
+        "arabic": "يبدو أنك متوتر أو قلق؛ سنتبع خطوات الاسترخاء التدريجي للعضلات مع توجيه ذهنك نحو الراحة."  
     },
     "lonely": {
         "english": "The user feels lonely—create warm companionship characters and reassuring dialogue.",
-        "arabic": "المستخدم يشعر بالوحدة – ابتكر شخصيات رفيقة ودية وحواراً مطمئناً."
+        "arabic": "أرى شعور الوحدة يرافقك؛ سأحكي لك حكاية يملؤها دفء الصداقة وحوار يلمس القلب."  
     },
     "sexual": {
         "english": "The user experiences sexual frustration—focus on self-care, gentle body awareness, and comfort.",
-        "arabic": "المستخدم يعاني من إحباط جنسي – ركز على العناية الذاتية والوعي الجسدي اللطيف والراحة."
+        "arabic": "أشعر بإحباطك الجنسي؛ سنركز على العناية بالجسد بلطف والوعي الحسي لتهدئة الحواس وإيجاد الراحة."  
     },
     "general": {
         "english": "The user seeks a calm, restorative bedtime story.",
-        "arabic": "المستخدم يبحث عن قصة هادئة ومُنعِشة قبل النوم."
+        "arabic": "تبحث عن قصة هادئة تصحبك إلى النوم بسلام؛ استمع لهذه الحكاية الهادئة."  
     }
 }
 
 # -----------------------------------------------------------------------------
-# System personas to vary tone
+# System personas to vary tone (teacher style Arabic)
 # -----------------------------------------------------------------------------
 SYSTEM_PERSONAS = {
     "english": [
@@ -106,9 +106,9 @@ SYSTEM_PERSONAS = {
         "You are Nightingale, a soothing storyteller who weaves healing into every word."
     ],
     "arabic": [
-        "أنت الصمت الستار، مساعد مهدئ في تحسين النوم.",
-        "أنت الدكتور سومنوس، طبيب ذكاء اصطناعي متعاطف متخصص في علاج الأرق.",
-        "أنت طائر الليل، راوي قصص هادئة ينسج الشفاء في كل كلمة."
+        "أنت Silent Veil، مدرّس فذ في فن الاسترخاء قبل النوم.",
+        "أنت دكتور Somnus، أستاذ في سحر القصص المعالجة للذهن والجسد.",
+        "أنت Nightingale، معلم حكيم ينسج الحكايات لتبعث فيك السكينة والطمأنينة."
     ]
 }
 
@@ -164,6 +164,9 @@ def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         logger.error("Missing PIXABAY_API_KEY environment variable.")
         return None
+    # fallback English query if Arabic
+    if MoodAnalyzer.detect_language(query) == 'arabic':
+        query = 'calm night'
     params = {"key": pixabay_api_key, "q": query, "image_type": "illustration", "per_page": 10, "safesearch": "true"}
     try:
         resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=10)
@@ -171,9 +174,7 @@ def search_cartoon_image(query: str) -> str | None:
             logger.error(f"Pixabay API error {resp.status_code}: {resp.text}")
             return None
         hits = resp.json().get("hits", [])
-        if not hits:
-            return None
-        return random.choice(hits)["webformatURL"]
+        return random.choice(hits).get("webformatURL") if hits else None
     except Exception as e:
         logger.error(f"Pixabay search failed: {e}")
         return None
@@ -182,11 +183,15 @@ def search_cartoon_image(query: str) -> str | None:
 def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language: str) -> list:
     persona = random.choice(SYSTEM_PERSONAS[language])
     therapy = THERAPY_INSTRUCTIONS[category][language]
-    system_content = (f"System: {persona}\nInstruction: {therapy}\n\nUser Mood: '{mood}', Sleep Quality: '{sleep_quality}'.\nTask: Create bedtime story #{i+1} with a unique title, setting, characters, and emotional arc tailored to the user's state. Output strictly in JSON (title, description, content) as flat strings.")
-    if language == "arabic":
-        system_content += "\nPlease respond in Arabic only."
-    return [{"role": "system", "content": system_content}, {"role": "user", "content": ""}]
-
+    prompt = (
+        f"System: {persona}\n"
+        f"Instruction: {therapy}\n\n"
+        f"User Mood: '{mood}', Sleep Quality: '{sleep_quality}'.\n"
+        f"Task: Create bedtime story #{i+1} with a unique title, setting, characters, and emotional arc tailored to the user's state. Output strictly in JSON (title, description, content) as flat strings."
+    )
+    if language == 'arabic':
+        prompt += "\nPlease respond in Arabic only."
+    return [{"role": "system", "content": prompt}, {"role": "user", "content": ""}]
 
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
@@ -196,50 +201,46 @@ def generate_stories():
     count = int(data.get("count", 5))
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
-
     category, language = MoodAnalyzer.categorize(mood)
-    stories, seen_titles = [], set()
+    stories, seen = [], set()
     for i in range(count):
-        messages = build_prompt(i, mood, sleep_quality, category, language)
-        raw_json, err = _call_groq(messages)
-        story_data = clean_json_output(raw_json or "")
-        raw_title = extract_text(story_data.get("title", f"Oneiric Journey #{i+1}"))
-        unique_title, suffix = raw_title.strip(), 2
-        while unique_title in seen_titles:
-            unique_title = f"{raw_title} ({suffix})"; suffix += 1
-        seen_titles.add(unique_title)
+        msgs = build_prompt(i, mood, sleep_quality, category, language)
+        raw, err = _call_groq(msgs)
+        data = clean_json_output(raw or "")
+        title = extract_text(data.get("title", f"Dream #{i+1}")).strip()
+        base, suffix = title, 2
+        while title in seen:
+            title = f"{base} ({suffix})"; suffix+=1
+        seen.add(title)
         stories.append({
-            "title": unique_title,
-            "description": extract_text(story_data.get("description", "")).strip(),
-            "content": extract_text(story_data.get("content", "")).strip(),
-            "imageUrl": search_cartoon_image(unique_title or mood) or "",
+            "title": title,
+            "description": extract_text(data.get("description", "")).strip(),
+            "content": extract_text(data.get("content", "")).strip(),
+            "imageUrl": search_cartoon_image(title),
             "durationMinutes": random.choice([4,5,6])
         })
-    return jsonify(stories=stories) if stories else jsonify(error="Failed to generate stories"), 500
-
+    return jsonify(stories=stories) if stories else jsonify(error="Failed"), 500
 
 @app.route("/generate-story-and-image", methods=["POST"])
 def generate_story_and_image():
     data = request.get_json() or {}
-    mood, sleep_quality = data.get("mood",""), data.get("sleep_quality","")
-    if not mood or not sleep_quality:
-        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
-    category, language = MoodAnalyzer.categorize(mood)
-    messages = build_prompt(1, mood, sleep_quality, category, language)
-    raw_json, err = _call_groq(messages)
-    story_data = clean_json_output(raw_json or "")
+    mood, sq = data.get("mood", "").strip(), data.get("sleep_quality", "").strip()
+    if not mood or not sq:
+        return jsonify(error="Missing 'mood' or 'sleep_quality'"),400
+    cat, lang = MoodAnalyzer.categorize(mood)
+    msgs = build_prompt(1, mood, sq, cat, lang)
+    raw, err = _call_groq(msgs)
+    d = clean_json_output(raw or "")
     return jsonify({
-        "title": extract_text(story_data.get("title","Oneiric Dream")).strip(),
-        "description": extract_text(story_data.get("description","")).strip(),
-        "content": extract_text(story_data.get("content","")).strip(),
-        "imageUrl": search_cartoon_image(mood) or "",
+        "title": extract_text(d.get("title","")).strip(),
+        "description": extract_text(d.get("description","")).strip(),
+        "content": extract_text(d.get("content","")).strip(),
+        "imageUrl": search_cartoon_image(mood),
         "durationMinutes": random.choice([4,5,6])
     })
 
-
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-
+    port = int(os.getenv("PORT",5000))
+    app.run(host="0.0.0.0",port=port)
 
 

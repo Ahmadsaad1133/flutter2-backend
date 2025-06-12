@@ -6,6 +6,8 @@ from flask_cors import CORS
 import logging
 import random
 
+from mood_utils import MoodAnalyzer  # New import
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -18,6 +20,49 @@ pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
+# Therapeutic instructions by category
+THERAPY_INSTRUCTIONS = {
+    "anger": {
+        "english": "The user feels angry or frustrated—guide them through gentle breathing and calming imagery.",
+        "arabic": "المستخدم يشعر بالغضب أو الإحباط – قدّم له تمارين تنفس هادئة وصوراً مهدئة."
+    },
+    "sadness": {
+        "english": "The user feels sad—infuse empathy, healing metaphors, and hope into the narrative.",
+        "arabic": "المستخدم يشعر بالحزن – أضف تعاطفاً واستعارات شفائية وأملاً في القصة."
+    },
+    "stress": {
+        "english": "The user is stressed or anxious—include relaxation techniques like progressive muscle relaxation.",
+        "arabic": "المستخدم متوتر أو قلق – اشمل تقنيات الاسترخاء مثل الاسترخاء التدريجي للعضلات."
+    },
+    "lonely": {
+        "english": "The user feels lonely—create warm companionship characters and reassuring dialogue.",
+        "arabic": "المستخدم يشعر بالوحدة – ابتكر شخصيات رفيقة ودية وحواراً مطمئناً."
+    },
+    "sexual": {
+        "english": "The user experiences sexual frustration—focus on self-care, gentle body awareness, and comfort.",
+        "arabic": "المستخدم يعاني من إحباط جنسي – ركز على العناية الذاتية والوعي الجسدي اللطيف والراحة."
+    },
+    "general": {
+        "english": "The user seeks a calm, restorative bedtime story.",
+        "arabic": "المستخدم يبحث عن قصة هادئة ومُنعِشة قبل النوم."
+    }
+}
+
+# System personas to vary tone
+SYSTEM_PERSONAS = {
+    "english": [
+        "You are Silent Veil, a calm sleep coach assistant.",
+        "You are Dr. Somnus, an empathetic AI doctor specializing in sleep therapy.",
+        "You are Nightingale, a soothing storyteller who weaves healing into every word."
+    ],
+    "arabic": [
+        "أنت الصمت الستار، مساعد مهدئ في تحسين النوم.",
+        "أنت الدكتور سومنوس، طبيب ذكاء اصطناعي متعاطف متخصص في علاج الأرق.",
+        "أنت طائر الليل، راوي قصص هادئة ينسج الشفاء في كل كلمة."
+    ]
+}
+
+
 def extract_text(value):
     if isinstance(value, str):
         return value
@@ -29,35 +74,30 @@ def extract_text(value):
     else:
         return str(value) if value is not None else ''
 
-def _call_groq(user_prompt: str) -> (str, str):
-    try:
-        messages = [
-            {"role": "system", "content": "You are Silent Veil, a calm sleep coach assistant."},
-            {"role": "user", "content": user_prompt}
-        ]
-        payload = {
-            "model": "llama3-70b-8192",
-            "messages": messages,
-            "temperature": 0.95,
-            "max_tokens": 600
-        }
-        res = requests.post(
-            GROQ_API_URL,
-            headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=20
-        )
-        if res.status_code != 200:
-            logger.error(f"Groq API error: {res.status_code} - {res.text}")
-            return None, f"Groq API error: {res.status_code}"
-        data = res.json()
-        content = data.get("choices", [])[0].get("message", {}).get("content")
-        if not content:
-            return None, "Empty response from Groq"
-        return content.strip(), None
-    except Exception as e:
-        logger.error(f"Groq call failed: {e}")
-        return None, str(e)
+
+def _call_groq(messages: list) -> str:
+    payload = {
+        "model": "llama3-70b-8192",
+        "messages": messages,
+        "temperature": 1.0,
+        "top_p": 0.9,
+        "max_tokens": 700
+    }
+    res = requests.post(
+        GROQ_API_URL,
+        headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=20
+    )
+    if res.status_code != 200:
+        logger.error(f"Groq API error: {res.status_code} - {res.text}")
+        return None, f"Groq API error: {res.status_code}"
+    data = res.json()
+    content = data.get("choices", [])[0].get("message", {}).get("content")
+    if not content:
+        return None, "Empty response from Groq"
+    return content.strip(), None
+
 
 def clean_json_output(json_text: str) -> dict:
     try:
@@ -68,23 +108,14 @@ def clean_json_output(json_text: str) -> dict:
                 parsed["content"] = json.dumps(content, indent=2)
         return parsed
     except Exception:
-        return {
-            "title": "Oneiric Dream",
-            "description": "A calm bedtime story.",
-            "content": json_text
-        }
+        return {"title": "Oneiric Dream", "description": "A calm bedtime story.", "content": json_text}
+
 
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         logger.error("Missing PIXABAY_API_KEY environment variable.")
         return None
-    params = {
-        "key": pixabay_api_key,
-        "q": query,
-        "image_type": "illustration",
-        "per_page": 10,
-        "safesearch": "true"
-    }
+    params = {"key": pixabay_api_key, "q": query, "image_type": "illustration", "per_page": 10, "safesearch": "true"}
     try:
         resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=10)
         if resp.status_code != 200:
@@ -98,32 +129,41 @@ def search_cartoon_image(query: str) -> str | None:
         logger.error(f"Pixabay search failed: {e}")
         return None
 
+
+def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language: str) -> list:
+    persona = random.choice(SYSTEM_PERSONAS[language])
+    therapy = THERAPY_INSTRUCTIONS[category][language]
+    system_content = (
+        f"System: {persona}\n"
+        f"Instruction: {therapy}\n\n"
+        f"User Mood: '{mood}', Sleep Quality: '{sleep_quality}'.\n"
+        "Task: Create bedtime story #{i+1} with a unique title, setting, characters, and emotional arc tailored to the user's state. "
+        "Output strictly in JSON (title, description, content) as flat strings."
+    )
+    return [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": ""}
+    ]
+
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
     data = request.get_json() or {}
     mood = data.get("mood", "").strip()
     sleep_quality = data.get("sleep_quality", "").strip()
     count = int(data.get("count", 5))
-
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
+
+    # Determine category & language
+    category, language = MoodAnalyzer.categorize(mood)
 
     stories = []
     seen_titles = set()
 
     for i in range(count):
-        prompt = (
-            f"You are Silent Veil, a calm sleep coach. Based solely on the user's mood '{mood}' "
-            f"and sleep quality '{sleep_quality}', create a unique bedtime story #{i+1}. "
-            "Ensure the story has a completely original and distinct **title** that has not been used in previous stories. "
-            "Each story must have a unique setting, different characters, and a varied emotional tone. "
-            "Avoid reusing any structure, names, or phrases. "
-            "Format the output as flat JSON with fields: title, description, content. "
-            "All values must be plain strings. No markdown or nested data."
-        )
-
-        story_json_str, err = _call_groq(prompt)
-        story_data = clean_json_output(story_json_str or "")
+        messages = build_prompt(i, mood, sleep_quality, category, language)
+        raw_json, err = _call_groq(messages)
+        story_data = clean_json_output(raw_json or "")
 
         raw_title = extract_text(story_data.get("title", f"Oneiric Journey #{i+1}")).strip()
         unique_title = raw_title
@@ -159,13 +199,11 @@ def generate_story_and_image():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-    prompt = (
-        f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
-        "create a calming, unique bedtime story. Respond in JSON with title, description, and plain natural language content. "
-        "All fields must be plain strings. Do not return code, markdown, or nested objects."
-    )
-    story_json_str, err = _call_groq(prompt)
-    story_data = clean_json_output(story_json_str or "")
+    # Determine category & language
+    category, language = MoodAnalyzer.categorize(mood)
+    messages = build_prompt(1, mood, sleep_quality, category, language)
+    raw_json, err = _call_groq(messages)
+    story_data = clean_json_output(raw_json or "")
 
     title = extract_text(story_data.get("title", "Oneiric Dream")).strip()
     description = extract_text(story_data.get("description", "")).strip()

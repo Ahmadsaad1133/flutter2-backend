@@ -6,7 +6,7 @@ from flask_cors import CORS
 import logging
 import random
 
-from mood_utils import MoodAnalyzer  # New import
+from mood_utils import MoodAnalyzer  # Your utility class
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -66,16 +66,15 @@ SYSTEM_PERSONAS = {
 def extract_text(value):
     if isinstance(value, str):
         return value
-    elif isinstance(value, dict):
-        for key in ['text', 'content', 'en', 'value']:
+    if isinstance(value, dict):
+        for key in ("text", "content", "en", "value"):
             if key in value and isinstance(value[key], str):
                 return value[key]
         return json.dumps(value)
-    else:
-        return str(value) if value is not None else ''
+    return str(value) if value is not None else ""
 
 
-def _call_groq(messages: list) -> str:
+def _call_groq(messages: list) -> (str, str):
     payload = {
         "model": "llama3-70b-8192",
         "messages": messages,
@@ -103,9 +102,9 @@ def clean_json_output(json_text: str) -> dict:
     try:
         parsed = json.loads(json_text)
         if isinstance(parsed, dict):
-            content = parsed.get("content", "")
-            if isinstance(content, dict):
-                parsed["content"] = json.dumps(content, indent=2)
+            c = parsed.get("content", "")
+            if isinstance(c, dict):
+                parsed["content"] = json.dumps(c, indent=2)
         return parsed
     except Exception:
         return {"title": "Oneiric Dream", "description": "A calm bedtime story.", "content": json_text}
@@ -115,7 +114,13 @@ def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         logger.error("Missing PIXABAY_API_KEY environment variable.")
         return None
-    params = {"key": pixabay_api_key, "q": query, "image_type": "illustration", "per_page": 10, "safesearch": "true"}
+    params = {
+        "key": pixabay_api_key,
+        "q": query,
+        "image_type": "illustration",
+        "per_page": 10,
+        "safesearch": "true"
+    }
     try:
         resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=10)
         if resp.status_code != 200:
@@ -124,7 +129,7 @@ def search_cartoon_image(query: str) -> str | None:
         hits = resp.json().get("hits", [])
         if not hits:
             return None
-        return random.choice(hits).get("webformatURL")
+        return random.choice(hits)["webformatURL"]
     except Exception as e:
         logger.error(f"Pixabay search failed: {e}")
         return None
@@ -137,13 +142,17 @@ def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language:
         f"System: {persona}\n"
         f"Instruction: {therapy}\n\n"
         f"User Mood: '{mood}', Sleep Quality: '{sleep_quality}'.\n"
-        "Task: Create bedtime story #{i+1} with a unique title, setting, characters, and emotional arc tailored to the user's state. "
+        f"Task: Create bedtime story #{i+1} with a unique title, setting, characters, "
+        "and emotional arc tailored to the user's state. "
         "Output strictly in JSON (title, description, content) as flat strings."
     )
+    if language == "arabic":
+        system_content += "\nPlease respond in Arabic only."
     return [
         {"role": "system", "content": system_content},
         {"role": "user", "content": ""}
     ]
+
 
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
@@ -173,23 +182,19 @@ def generate_stories():
             suffix += 1
         seen_titles.add(unique_title)
 
-        description = extract_text(story_data.get("description", "")).strip()
-        content = extract_text(story_data.get("content", "")).strip()
-        image_url = search_cartoon_image(unique_title or mood) or ""
-        duration = random.choice([4, 5, 6])
-
         stories.append({
             "title": unique_title,
-            "description": description,
-            "content": content,
-            "imageUrl": image_url,
-            "durationMinutes": duration
+            "description": extract_text(story_data.get("description", "")).strip(),
+            "content":     extract_text(story_data.get("content", "")).strip(),
+            "imageUrl":    search_cartoon_image(unique_title or mood) or "",
+            "durationMinutes": random.choice([4, 5, 6])
         })
 
     if not stories:
         return jsonify(error="Failed to generate stories"), 500
 
     return jsonify(stories=stories)
+
 
 @app.route("/generate-story-and-image", methods=["POST"])
 def generate_story_and_image():
@@ -199,25 +204,19 @@ def generate_story_and_image():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-    # Determine category & language
     category, language = MoodAnalyzer.categorize(mood)
     messages = build_prompt(1, mood, sleep_quality, category, language)
     raw_json, err = _call_groq(messages)
     story_data = clean_json_output(raw_json or "")
 
-    title = extract_text(story_data.get("title", "Oneiric Dream")).strip()
-    description = extract_text(story_data.get("description", "")).strip()
-    content = extract_text(story_data.get("content", "")).strip()
-    image_url = search_cartoon_image(title or mood) or ""
-    duration = random.choice([4, 5, 6])
-
     return jsonify({
-        "title": title,
-        "description": description,
-        "content": content,
-        "imageUrl": image_url,
-        "durationMinutes": duration
+        "title": extract_text(story_data.get("title", "Oneiric Dream")).strip(),
+        "description": extract_text(story_data.get("description", "")).strip(),
+        "content": extract_text(story_data.get("content", "")).strip(),
+        "imageUrl": search_cartoon_image(mood) or "",
+        "durationMinutes": random.choice([4, 5, 6])
     })
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))

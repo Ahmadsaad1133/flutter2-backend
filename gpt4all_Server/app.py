@@ -60,12 +60,11 @@ SYSTEM_PERSONAS = {
 }
 
 # Utilities
-
 def extract_text(value):
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        for key in ("text", "content", "en", "value"):
+        for key in ("text", "content", "title", "description", "value"):
             if key in value and isinstance(value[key], str):
                 return value[key]
         return json.dumps(value)
@@ -96,33 +95,25 @@ def _call_groq(messages: list) -> tuple[str, str]:
 
 
 def clean_json_output(raw_text: str, language: str) -> dict:
-    if language == "arabic":
-        text = raw_text.strip() or "قصة قبل النوم"
-        return {
-            "title": "قصة قبل النوم",
-            "description": "",
-            "content": text,
-            "story": text
-        }
+    # Expect JSON for both English and Arabic now
     try:
         parsed = json.loads(raw_text)
         if isinstance(parsed, dict):
             return {
-                "title": extract_text(parsed.get("title", "Untitled")),
+                "title": extract_text(parsed.get("title", "")),
                 "description": extract_text(parsed.get("description", "")),
                 "content": extract_text(parsed.get("content", raw_text))
             }
     except json.JSONDecodeError:
         pass
-    return {"title": "Untitled", "description": "", "content": raw_text.strip()}
+    # Fallback: put full text into content
+    return {"title": "", "description": "", "content": raw_text.strip()}
 
 
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         return None
-    lang = MoodAnalyzer.detect_language(query)
-    q = query
-    params = {"key": pixabay_api_key, "q": q, "image_type": "illustration", "per_page": 10, "safesearch": "true"}
+    params = {"key": pixabay_api_key, "q": query, "image_type": "illustration", "per_page": 10, "safesearch": "true"}
     try:
         resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=10)
         resp.raise_for_status()
@@ -133,19 +124,18 @@ def search_cartoon_image(query: str) -> str | None:
         return None
 
 # Prompt builder
-
 def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language: str) -> list:
     persona = random.choice(SYSTEM_PERSONAS[language])
     therapy = THERAPY_INSTRUCTIONS[category][language]
     if language == 'english':
         user_instr = (
-            f"User Mood: {mood}, Sleep Quality: {sleep_quality}."
-            " Please produce a bedtime story in strict JSON with fields `title`, `description`, and `content`."
+            f"User Mood: {mood}, Sleep Quality: {sleep_quality}." 
+            " Create a bedtime story. Return strictly valid JSON with fields `title`, `description`, and `content`."
         )
     else:
         user_instr = (
             f"مزاج المستخدم: {mood}، جودة النوم: {sleep_quality}."
-            " اكتب قصة نوم جميلة باللغة العربية بدون تنسيق JSON، فقط السرد."
+            " اكتب قصة نوم باللغة العربية. أعد استجابة بصيغة JSON تتضمن الحقول `title` و `description` و `content`."
         )
     return [
         {"role": "system", "content": persona},
@@ -154,7 +144,6 @@ def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language:
     ]
 
 # Routes
-
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
     data = request.get_json() or {}
@@ -172,17 +161,16 @@ def generate_stories():
             logger.error("Error generating story %d: %s", i, err)
             continue
         parsed = clean_json_output(raw, language)
-        title = parsed.get("title", f"Dream #{i+1}")
+        title = parsed.get("title") or f"Dream #{i+1}" if language=='english' else parsed.get("title") or f"حلم #{i+1}"
         base, suffix = title, 2
         while title in seen:
             title = f"{base} ({suffix})"
             suffix += 1
         seen.add(title)
         stories.append({
-            "title": title if language == "english" else parsed.get("title",""),
+            "title": title,
             "description": parsed.get("description", ""),
             "content": parsed.get("content", ""),
-            "story": parsed.get("story", ""),
             "imageUrl": search_cartoon_image(title),
             "durationMinutes": random.choice([4, 5, 6])
         })
@@ -201,11 +189,11 @@ def generate_story_and_image():
     if err:
         return jsonify(error=err), 500
     parsed = clean_json_output(raw, language)
+    title = parsed.get("title") or (language=='english' and "Dream" or "حلم")
     return jsonify({
-        "title": parsed.get("title", ""),
+        "title": title,
         "description": parsed.get("description", ""),
         "content": parsed.get("content", ""),
-        "story": parsed.get("story", ""),
         "imageUrl": search_cartoon_image(mood),
         "durationMinutes": random.choice([4, 5, 6])
     })
@@ -243,6 +231,8 @@ def chat():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
     app.run(host="0.0.0.0", port=port)
 
 

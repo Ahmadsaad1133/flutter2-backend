@@ -1,4 +1,3 @@
-# app.py
 import json
 import os
 import random
@@ -20,14 +19,13 @@ pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
-# MoodAnalyzer class
 class MoodAnalyzer:
     MOOD_KEYWORDS = {
-        "anger": [...],  # (اختصرنا لتوفير المساحة — احتفظ بالكلمات الأصلية)
-        "sadness": [...],
-        "stress": [...],
-        "lonely": [...],
-        "sexual": [...]
+        "anger": ["غاضب", "غضب", "منفعل", "مستاء", "عصبي", "ثوران", "انفجار"],
+        "sadness": ["حزين", "حزن", "مكتئب", "يبكي", "دموع", "ضائع", "منكسر"],
+        "stress": ["قلق", "توتر", "ضغط", "أعصاب", "إرهاق", "مرهق", "مجهد"],
+        "lonely": ["وحيد", "وحدة", "عزلة", "منعزل", "بلا صديق", "مفرد"],
+        "sexual": ["حب", "شوق", "عاطفة", "حنان", "جاذبية", "رغبة", "رومنسي"]
     }
     GENERAL_CATEGORY = "general"
     ARABIC_CHAR_PATTERN = re.compile(r"[\u0600-\u06FF]")
@@ -48,22 +46,37 @@ class MoodAnalyzer:
 
 THERAPY_INSTRUCTIONS = {
     "anger": {
-        "english": "...",
-        "arabic": "أرى أنك غاضب أو متأزم..."
+        "english": "I sense anger or frustration...",
+        "arabic": "أرى أنك غاضب أو متأزم. دعني أروي لك قصة تهدئك."
+    },
+    "sadness": {
+        "english": "You're feeling sad. Here's a gentle story to comfort you.",
+        "arabic": "أشعر بحزنك. سأحكي لك قصة تساعدك على الهدوء والنوم."
+    },
+    "stress": {
+        "english": "You're stressed. Let this calming tale relax you.",
+        "arabic": "أنت متوتر. دعني أروي لك قصة تهدئ أعصابك."
+    },
+    "lonely": {
+        "english": "Feeling lonely? Here's a story to keep you company.",
+        "arabic": "أشعر بوحدتك. هذه قصة تشعرك بالدفء والمرافقة."
+    },
+    "sexual": {
+        "english": "Romantic mood detected. Here's a tasteful bedtime story.",
+        "arabic": "مزاجك عاطفي. إليك قصة قبل النوم تليق بهذا الشعور."
     },
     "general": {
-        "english": "...",
-        "arabic": "تبحث عن قصة هادئة تصحبك إلى النوم بسلام..."
+        "english": "Here’s a soothing story to help you sleep well.",
+        "arabic": "تبحث عن قصة هادئة تصحبك إلى النوم بسلام."
     }
-    # أضف الباقي كما هو
 }
 
 SYSTEM_PERSONAS = {
     "english": [
-        "You are Nightingale..."
+        "You are Nightingale, a wise and calming bedtime storyteller..."
     ],
     "arabic": [
-        "أنت Nightingale، معلم حكيم..."
+        "أنت Nightingale، معلم حكيم يروي قصصًا مهدئة قبل النوم..."
     ]
 }
 
@@ -100,7 +113,6 @@ def _call_groq(messages: list) -> (str, str):
 
 def clean_json_output(raw_text: str, language: str) -> dict:
     if language == "arabic":
-        # Return as a simple story text
         return {"story": raw_text.strip() if raw_text else "قصة قبل النوم"}
     try:
         parsed = json.loads(raw_text)
@@ -204,4 +216,5 @@ def generate_story_and_image():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 

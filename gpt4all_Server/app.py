@@ -1,10 +1,11 @@
+# app.py
 import json
 import os
 import random
 import logging
 import re
-import requests
 from flask import Flask, request, jsonify
+import requests
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -19,14 +20,14 @@ pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
-# Mood Analyzer
+# MoodAnalyzer class
 class MoodAnalyzer:
     MOOD_KEYWORDS = {
-        "anger": ["angry", "mad", "furious", "rage", "غاضب", "عصبي", "منفعل"],
-        "sadness": ["sad", "depressed", "crying", "broken", "حزين", "مكسور", "كئيب"],
-        "stress": ["stressed", "anxious", "nervous", "توتر", "قلق", "مضغوط"],
-        "lonely": ["lonely", "alone", "isolated", "وحيد", "عزلة", "منعزل"],
-        "sexual": ["aroused", "sensual", "horny", "جنسي", "مثير", "رغبة"]
+        "anger": ["angry", "mad", "furious", "rage", "irritated"],
+        "sadness": ["sad", "depressed", "down", "unhappy"],
+        "stress": ["stressed", "anxious", "worried", "tense"],
+        "lonely": ["lonely", "alone", "isolated"],
+        "sexual": ["sexual", "intimate", "desire", "romantic"]
     }
     GENERAL_CATEGORY = "general"
     ARABIC_CHAR_PATTERN = re.compile(r"[\u0600-\u06FF]")
@@ -45,22 +46,27 @@ class MoodAnalyzer:
                     return category, lang
         return cls.GENERAL_CATEGORY, lang
 
-# Instructions and Persona
 THERAPY_INSTRUCTIONS = {
-    "anger": {"english": "I see you're feeling angry...", "arabic": "أرى أنك غاضب..."},
-    "sadness": {"english": "I see you're feeling sad...", "arabic": "أشعر أنك حزين..."},
-    "stress": {"english": "I see you're stressed...", "arabic": "أشعر أنك متوتر..."},
-    "lonely": {"english": "Feeling lonely is hard...", "arabic": "الوحدة صعبة..."},
-    "sexual": {"english": "Let's redirect those thoughts...", "arabic": "دعنا نحول هذه المشاعر..."},
-    "general": {"english": "You're looking for a calming bedtime story...", "arabic": "تبحث عن قصة هادئة تساعدك على النوم..."},
+    "anger": {
+        "english": "You seem angry... here's a calming bedtime story.",
+        "arabic": "أرى أنك غاضب أو متأزم..."
+    },
+    "general": {
+        "english": "You’re looking for a peaceful bedtime story.",
+        "arabic": "تبحث عن قصة هادئة تصحبك إلى النوم بسلام..."
+    }
+    # Add more categories as needed
 }
 
 SYSTEM_PERSONAS = {
-    "english": ["You are Nightingale, a wise and gentle storyteller for children and adults."],
-    "arabic": ["أنت Nightingale، راوي حكايات هادئ وحنون يساعد الناس على النوم."]
+    "english": [
+        "You are Nightingale, a wise and kind bedtime storyteller for kids and adults alike."
+    ],
+    "arabic": [
+        "أنت Nightingale، معلم حكيم يروي قصص النوم بأسلوب هادئ وملهم."
+    ]
 }
 
-# Utilities
 def extract_text(value):
     if isinstance(value, str):
         return value
@@ -69,7 +75,7 @@ def extract_text(value):
             if key in value and isinstance(value[key], str):
                 return value[key]
         return json.dumps(value)
-    return str(value) if value else ""
+    return str(value) if value is not None else ""
 
 def _call_groq(messages: list) -> (str, str):
     payload = {
@@ -87,9 +93,10 @@ def _call_groq(messages: list) -> (str, str):
     )
     if res.status_code != 200:
         logger.error(f"Groq API error: {res.status_code} - {res.text}")
-        return "", f"Groq API error: {res.status_code}"
+        return None, f"Groq API error: {res.status_code}"
     data = res.json()
-    return data["choices"][0]["message"]["content"].strip(), None
+    content = data.get("choices", [])[0].get("message", {}).get("content")
+    return content.strip() if content else "", None
 
 def clean_json_output(raw_text: str, language: str) -> dict:
     if language == "arabic":
@@ -126,17 +133,24 @@ def search_cartoon_image(query: str) -> str | None:
         logger.error(f"Pixabay search failed: {e}")
         return None
 
-# Build LLM Prompt
 def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language: str) -> list:
     persona = random.choice(SYSTEM_PERSONAS[language])
-    therapy = THERAPY_INSTRUCTIONS[category][language]
-    if language == 'english':
-        prompt = f"{persona}\n{therapy}\nUser Mood: {mood}, Sleep Quality: {sleep_quality}.\nCreate a bedtime story in JSON format with title, description, and content."
+    therapy = THERAPY_INSTRUCTIONS.get(category, THERAPY_INSTRUCTIONS["general"])[language]
+    if language == 'arabic':
+        prompt = (
+            f"{persona}\n"
+            f"{therapy}\n\n"
+            f"حالة المستخدم: المزاج = '{mood}', جودة النوم = '{sleep_quality}'\n"
+            f"اكتب لي قصة كاملة جميلة للنوم بدون JSON، بل نص عربي فصيح ومتماسك."
+        )
     else:
-        prompt = f"{persona}\n{therapy}\nمزاج المستخدم: {mood}، جودة النوم: {sleep_quality}.\nاكتب قصة نوم جميلة باللغة العربية بدون JSON."
+        prompt = (
+            f"System: {persona}\n"
+            f"Instruction: {therapy}\n\n"
+            f"User Mood: '{mood}', Sleep Quality: '{sleep_quality}'.\n"
+            f"Task: Create a bedtime story with title, description, content in JSON."
+        )
     return [{"role": "system", "content": prompt}, {"role": "user", "content": ""}]
-
-# Routes
 
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
@@ -163,7 +177,7 @@ def generate_stories():
             "content": parsed.get("content", "") if language == "english" else "",
             "story": parsed.get("story", "") if language == "arabic" else "",
             "imageUrl": search_cartoon_image(title),
-            "durationMinutes": random.choice([4, 5, 6])
+            "durationMinutes": random.choice([4,5,6])
         })
     return jsonify(stories=stories)
 
@@ -183,34 +197,30 @@ def generate_story_and_image():
         "content": parsed.get("content", "") if lang == "english" else "",
         "story": parsed.get("story", "") if lang == "arabic" else "",
         "imageUrl": search_cartoon_image(mood),
-        "durationMinutes": random.choice([4, 5, 6])
+        "durationMinutes": random.choice([4,5,6])
     })
 
 @app.route("/analyze", methods=["POST"])
-def analyze():
+def analyze_mood():
     data = request.get_json() or {}
-    mood = data.get("mood", "").strip()
-    sleep_quality = data.get("sleep_quality", "").strip()
-    if not mood or not sleep_quality:
-        return jsonify(error="Missing mood or sleep_quality"), 400
-    msgs = [
-        {"role": "system", "content": "You are a sleep therapist who gives clear advice based on user mood and sleep quality."},
-        {"role": "user", "content": f"My mood is '{mood}' and my sleep quality is '{sleep_quality}'. Can you give me insights and tips?"}
-    ]
-    response, _ = _call_groq(msgs)
-    return jsonify({"analysis": response or "No response available."})
+    mood, sq = data.get("mood", "").strip(), data.get("sleep_quality", "").strip()
+    if not mood or not sq:
+        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
+    category, language = MoodAnalyzer.categorize(mood)
+    return jsonify(category=category, language=language)
 
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json() or {}
-    history = data.get("history", [])
-    if not history:
-        return jsonify(error="Missing 'history'"), 400
-    response, _ = _call_groq(history)
-    return jsonify({"response": response or "No response."})
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return jsonify(error="Missing 'messages' list"), 400
+    raw, err = _call_groq(messages)
+    if err:
+        return jsonify(error=err), 500
+    return jsonify(reply=raw)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
 

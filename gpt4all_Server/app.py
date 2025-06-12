@@ -28,7 +28,7 @@ THERAPY_INSTRUCTIONS = {
     },
     "sadness": {
         "english": "The user feels sad—infuse empathy, healing metaphors, and hope into the narrative.",
-        "arabic": "المستخدم يشعر بالحزن – أضف تعاطفاً واستعارات شفائية وأملاً في القصة."
+        "arabic": "المستخدم يشعر بالحزن – أضف تعاطفا واستعارات شفائية وأملا في القصة."
     },
     "stress": {
         "english": "The user is stressed or anxious—include relaxation techniques like progressive muscle relaxation.",
@@ -36,7 +36,7 @@ THERAPY_INSTRUCTIONS = {
     },
     "lonely": {
         "english": "The user feels lonely—create warm companionship characters and reassuring dialogue.",
-        "arabic": "المستخدم يشعر بالوحدة – ابتكر شخصيات رفيقة ودية وحواراً مطمئناً."
+        "arabic": "المستخدم يشعر بالوحدة – ابتكر شخصيات رفيقة ودية وحوارا مطمئنا."
     },
     "sexual": {
         "english": "The user experiences sexual frustration—focus on self-care, gentle body awareness, and comfort.",
@@ -44,7 +44,7 @@ THERAPY_INSTRUCTIONS = {
     },
     "general": {
         "english": "The user seeks a calm, restorative bedtime story.",
-        "arabic": "المستخدم يبحث عن قصة هادئة ومُنعِشة قبل النوم."
+        "arabic": "المستخدم يبحث عن قصة هادئة ومنعشة قبل النوم."
     }
 }
 
@@ -67,7 +67,7 @@ def extract_text(value):
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        for key in ("text", "content", "en", "value"):
+        for key in ("text", "content", "en", "value"):  # prioritize these fields
             if key in value and isinstance(value[key], str):
                 return value[key]
         return json.dumps(value)
@@ -143,8 +143,8 @@ def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language:
         f"Instruction: {therapy}\n\n"
         f"User Mood: '{mood}', Sleep Quality: '{sleep_quality}'.\n"
         f"Task: Create bedtime story #{i+1} with a unique title, setting, characters, "
-        "and emotional arc tailored to the user's state. "
-        "Output strictly in JSON (title, description, content) as flat strings."
+        "and emotional arc tailored to the user's state. Output strictly in JSON "
+        "(title, description, content) as flat strings."
     )
     if language == "arabic":
         system_content += "\nPlease respond in Arabic only."
@@ -163,12 +163,9 @@ def generate_stories():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
-    # Determine category & language
     category, language = MoodAnalyzer.categorize(mood)
-
     stories = []
     seen_titles = set()
-
     for i in range(count):
         messages = build_prompt(i, mood, sleep_quality, category, language)
         raw_json, err = _call_groq(messages)
@@ -185,14 +182,12 @@ def generate_stories():
         stories.append({
             "title": unique_title,
             "description": extract_text(story_data.get("description", "")).strip(),
-            "content":     extract_text(story_data.get("content", "")).strip(),
-            "imageUrl":    search_cartoon_image(unique_title or mood) or "",
+            "content": extract_text(story_data.get("content", "")).strip(),
+            "imageUrl": search_cartoon_image(unique_title or mood) or "",
             "durationMinutes": random.choice([4, 5, 6])
         })
-
     if not stories:
         return jsonify(error="Failed to generate stories"), 500
-
     return jsonify(stories=stories)
 
 
@@ -221,5 +216,6 @@ def generate_story_and_image():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 

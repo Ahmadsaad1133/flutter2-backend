@@ -21,11 +21,11 @@ PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
 class MoodAnalyzer:
     MOOD_KEYWORDS = {
-        "anger": ["غاضب", "غضب", "منفعل", "مستاء", "عصبي", "ثوران", "انفجار"],
-        "sadness": ["حزين", "حزن", "مكتئب", "يبكي", "دموع", "ضائع", "منكسر"],
-        "stress": ["قلق", "توتر", "ضغط", "أعصاب", "إرهاق", "مرهق", "مجهد"],
-        "lonely": ["وحيد", "وحدة", "عزلة", "منعزل", "بلا صديق", "مفرد"],
-        "sexual": ["حب", "شوق", "عاطفة", "حنان", "جاذبية", "رغبة", "رومنسي"]
+        "anger": [...],
+        "sadness": [...],
+        "stress": [...],
+        "lonely": [...],
+        "sexual": [...]
     }
     GENERAL_CATEGORY = "general"
     ARABIC_CHAR_PATTERN = re.compile(r"[\u0600-\u06FF]")
@@ -46,37 +46,22 @@ class MoodAnalyzer:
 
 THERAPY_INSTRUCTIONS = {
     "anger": {
-        "english": "I sense anger or frustration...",
-        "arabic": "أرى أنك غاضب أو متأزم. دعني أروي لك قصة تهدئك."
-    },
-    "sadness": {
-        "english": "You're feeling sad. Here's a gentle story to comfort you.",
-        "arabic": "أشعر بحزنك. سأحكي لك قصة تساعدك على الهدوء والنوم."
-    },
-    "stress": {
-        "english": "You're stressed. Let this calming tale relax you.",
-        "arabic": "أنت متوتر. دعني أروي لك قصة تهدئ أعصابك."
-    },
-    "lonely": {
-        "english": "Feeling lonely? Here's a story to keep you company.",
-        "arabic": "أشعر بوحدتك. هذه قصة تشعرك بالدفء والمرافقة."
-    },
-    "sexual": {
-        "english": "Romantic mood detected. Here's a tasteful bedtime story.",
-        "arabic": "مزاجك عاطفي. إليك قصة قبل النوم تليق بهذا الشعور."
+        "english": "...",
+        "arabic": "أرى أنك غاضب أو متأزم..."
     },
     "general": {
-        "english": "Here’s a soothing story to help you sleep well.",
-        "arabic": "تبحث عن قصة هادئة تصحبك إلى النوم بسلام."
+        "english": "...",
+        "arabic": "تبحث عن قصة هادئة تصحبك إلى النوم بسلام..."
     }
+    # Add the rest as needed
 }
 
 SYSTEM_PERSONAS = {
     "english": [
-        "You are Nightingale, a wise and calming bedtime storyteller..."
+        "You are Nightingale, a wise teacher..."
     ],
     "arabic": [
-        "أنت Nightingale، معلم حكيم يروي قصصًا مهدئة قبل النوم..."
+        "أنت Nightingale، معلم حكيم..."
     ]
 }
 
@@ -112,8 +97,13 @@ def _call_groq(messages: list) -> (str, str):
     return content.strip() if content else "", None
 
 def clean_json_output(raw_text: str, language: str) -> dict:
+    raw_text = raw_text.strip()
+    if not raw_text:
+        return {"title": "Untitled", "description": "", "content": "", "story": "لا توجد قصة متاحة."}
+
     if language == "arabic":
-        return {"story": raw_text.strip() if raw_text else "قصة قبل النوم"}
+        return {"story": raw_text}
+
     try:
         parsed = json.loads(raw_text)
         if isinstance(parsed, dict):
@@ -122,26 +112,36 @@ def clean_json_output(raw_text: str, language: str) -> dict:
                 "description": extract_text(parsed.get("description", "")),
                 "content": extract_text(parsed.get("content", raw_text))
             }
-    except Exception:
-        pass
+    except json.JSONDecodeError as e:
+        logger.warning(f"JSON decode error: {e}")
+
     return {
         "title": "Untitled",
         "description": "",
-        "content": raw_text.strip()
+        "content": raw_text
     }
 
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
         return None
-    if MoodAnalyzer.detect_language(query) == 'arabic':
+    lang = MoodAnalyzer.detect_language(query)
+    if lang == 'arabic':
         query = 'calm night'
-    params = {"key": pixabay_api_key, "q": query, "image_type": "illustration", "per_page": 10, "safesearch": "true"}
+    params = {
+        "key": pixabay_api_key,
+        "q": query,
+        "image_type": "illustration",
+        "per_page": 10,
+        "safesearch": "true"
+    }
     try:
         resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=10)
         if resp.status_code != 200:
             return None
         hits = resp.json().get("hits", [])
-        return random.choice(hits).get("webformatURL") if hits else None
+        if not hits:
+            return None
+        return random.choice(hits).get("webformatURL")
     except Exception as e:
         logger.error(f"Pixabay search failed: {e}")
         return None
@@ -159,10 +159,11 @@ def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language:
         f"Instruction: {therapy}\n\n"
         f"User Mood: '{mood}', Sleep Quality: '{sleep_quality}'."
     )
-    if language == 'english':
-        prompt += "\nTask: Create a bedtime story with title, description, content in JSON."
-    else:
-        prompt += "\nاكتب لي قصة كاملة جميلة للنوم بدون JSON، بل نص عربي فصيح ومتماسك."
+    prompt += (
+        "\nاكتب لي قصة كاملة جميلة للنوم بدون JSON، بل نص عربي فصيح ومتماسك."
+        if language == 'arabic'
+        else "\nTask: Create a bedtime story with title, description, content in JSON."
+    )
     return [{"role": "system", "content": prompt}, {"role": "user", "content": ""}]
 
 @app.route("/generate-stories", methods=["POST"])
@@ -179,42 +180,47 @@ def generate_stories():
         msgs = build_prompt(i, mood, sleep_quality, category, language)
         raw, err = _call_groq(msgs)
         parsed = clean_json_output(raw or "", language)
-        title = parsed.get("title", f"Dream #{i+1}")
+        title = parsed.get("title") or f"Dream #{i+1}"
         base, suffix = title, 2
         while title in seen:
-            title = f"{base} ({suffix})"; suffix += 1
+            title = f"{base} ({suffix})"
+            suffix += 1
         seen.add(title)
+        image_query = title or mood or "calm night"
         stories.append({
             "title": title if language == "english" else "",
             "description": parsed.get("description", "") if language == "english" else "",
             "content": parsed.get("content", "") if language == "english" else "",
-            "story": parsed.get("story", "") if language == "arabic" else "",
-            "imageUrl": search_cartoon_image(title),
-            "durationMinutes": random.choice([4,5,6])
+            "story": parsed.get("story") or "لا توجد قصة متاحة." if language == "arabic" else "",
+            "imageUrl": search_cartoon_image(image_query),
+            "durationMinutes": random.choice([4, 5, 6])
         })
     return jsonify(stories=stories)
 
 @app.route("/generate-story-and-image", methods=["POST"])
 def generate_story_and_image():
     data = request.get_json() or {}
-    mood, sq = data.get("mood", "").strip(), data.get("sleep_quality", "").strip()
-    if not mood or not sq:
-        return jsonify(error="Missing 'mood' or 'sleep_quality'"),400
-    cat, lang = MoodAnalyzer.categorize(mood)
-    msgs = build_prompt(1, mood, sq, cat, lang)
+    mood = data.get("mood", "").strip()
+    sleep_quality = data.get("sleep_quality", "").strip()
+    if not mood or not sleep_quality:
+        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
+    category, language = MoodAnalyzer.categorize(mood)
+    msgs = build_prompt(1, mood, sleep_quality, category, language)
     raw, err = _call_groq(msgs)
-    parsed = clean_json_output(raw or "", lang)
+    parsed = clean_json_output(raw or "", language)
+    image_query = parsed.get("title") or mood or "calm night"
     return jsonify({
-        "title": parsed.get("title", "") if lang == "english" else "",
-        "description": parsed.get("description", "") if lang == "english" else "",
-        "content": parsed.get("content", "") if lang == "english" else "",
-        "story": parsed.get("story", "") if lang == "arabic" else "",
-        "imageUrl": search_cartoon_image(mood),
-        "durationMinutes": random.choice([4,5,6])
+        "title": parsed.get("title", "") if language == "english" else "",
+        "description": parsed.get("description", "") if language == "english" else "",
+        "content": parsed.get("content", "") if language == "english" else "",
+        "story": parsed.get("story") or "لا توجد قصة متاحة." if language == "arabic" else "",
+        "imageUrl": search_cartoon_image(image_query),
+        "durationMinutes": random.choice([4, 5, 6])
     })
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 

@@ -67,7 +67,7 @@ class MoodAnalyzer:
         return cls.GENERAL_CATEGORY, lang
 
 # -----------------------------------------------------------------------------
-# Therapeutic instructions by category (refined teacher Arabic)
+# Therapeutic instructions by category
 # -----------------------------------------------------------------------------
 THERAPY_INSTRUCTIONS = {
     "anger": {
@@ -97,7 +97,7 @@ THERAPY_INSTRUCTIONS = {
 }
 
 # -----------------------------------------------------------------------------
-# System personas to vary tone (teacher style Arabic)
+# System personas to vary tone
 # -----------------------------------------------------------------------------
 SYSTEM_PERSONAS = {
     "english": [
@@ -111,7 +111,6 @@ SYSTEM_PERSONAS = {
         "أنت Nightingale، معلم حكيم ينسج الحكايات لتبعث فيك السكينة والطمأنينة."
     ]
 }
-
 
 def extract_text(value):
     if isinstance(value, str):
@@ -187,10 +186,8 @@ def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language:
         f"System: {persona}\n"
         f"Instruction: {therapy}\n\n"
         f"User Mood: '{mood}', Sleep Quality: '{sleep_quality}'.\n"
-        f"Task: Create bedtime story #{i+1} with a unique title, setting, characters, and emotional arc tailored to the user's state. Output strictly in JSON (title, description, content) as flat strings."
+        f"Task: Create bedtime story #{i+1} in classical Arabic, professional teacher’s tone, fluent and poetic. Return the full story text only, without JSON or any other wrapper."
     )
-    if language == 'arabic':
-        prompt += "\nPlease respond in Arabic only."
     return [{"role": "system", "content": prompt}, {"role": "user", "content": ""}]
 
 @app.route("/generate-stories", methods=["POST"])
@@ -202,23 +199,34 @@ def generate_stories():
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
     category, language = MoodAnalyzer.categorize(mood)
-    stories, seen = [], set()
+    stories = []
+
     for i in range(count):
         msgs = build_prompt(i, mood, sleep_quality, category, language)
         raw, err = _call_groq(msgs)
-        data = clean_json_output(raw or "")
-        title = extract_text(data.get("title", f"Dream #{i+1}")).strip()
-        base, suffix = title, 2
-        while title in seen:
-            title = f"{base} ({suffix})"; suffix+=1
-        seen.add(title)
-        stories.append({
-            "title": title,
-            "description": extract_text(data.get("description", "")).strip(),
-            "content": extract_text(data.get("content", "")).strip(),
-            "imageUrl": search_cartoon_image(title),
-            "durationMinutes": random.choice([4,5,6])
-        })
+        if language == 'arabic':
+            full_story = raw.strip() if raw else ""
+            stories.append({
+                "story": full_story,
+                "imageUrl": search_cartoon_image(mood),
+                "durationMinutes": random.choice([4,5,6])
+            })
+        else:
+            data_out = clean_json_output(raw or "")
+            title = extract_text(data_out.get("title", f"Dream #{i+1}")).strip()
+            seen = set()
+            base, suffix = title, 2
+            while title in seen:
+                title = f"{base} ({suffix})"; suffix += 1
+            seen.add(title)
+            stories.append({
+                "title": title,
+                "description": extract_text(data_out.get("description", "")).strip(),
+                "content": extract_text(data_out.get("content", "")).strip(),
+                "imageUrl": search_cartoon_image(title),
+                "durationMinutes": random.choice([4,5,6])
+            })
+
     return jsonify(stories=stories) if stories else jsonify(error="Failed"), 500
 
 @app.route("/generate-story-and-image", methods=["POST"])
@@ -230,6 +238,13 @@ def generate_story_and_image():
     cat, lang = MoodAnalyzer.categorize(mood)
     msgs = build_prompt(1, mood, sq, cat, lang)
     raw, err = _call_groq(msgs)
+    if lang == 'arabic':
+        story_text = raw.strip() if raw else ""
+        return jsonify({
+            "story": story_text,
+            "imageUrl": search_cartoon_image(mood),
+            "durationMinutes": random.choice([4,5,6])
+        })
     d = clean_json_output(raw or "")
     return jsonify({
         "title": extract_text(d.get("title","")).strip(),

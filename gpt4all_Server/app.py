@@ -7,11 +7,11 @@ import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+app = Flask(_name_)
+CORS(app, resources={r"/": {"origins": ""}})
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(_name_)
 
 groq_api_key = os.getenv("GROQ_API_KEY")
 pixabay_api_key = os.getenv("PIXABAY_API_KEY")
@@ -44,7 +44,6 @@ class MoodAnalyzer:
                 return category, lang
         return cls.GENERAL_CATEGORY, lang
 
-# Instructions and Persona
 THERAPY_INSTRUCTIONS = {
     "anger": {"english": "I see you're feeling angry...", "arabic": "أرى أنك غاضب..."},
     "sadness": {"english": "I see you're feeling sad...", "arabic": "أشعر أنك حزين..."},
@@ -59,7 +58,6 @@ SYSTEM_PERSONAS = {
     "arabic": ["أنت Nightingale، راوي حكايات هادئ وحنون يساعد الناس على النوم."]
 }
 
-# Utilities
 def extract_text(value):
     if isinstance(value, str):
         return value
@@ -69,7 +67,6 @@ def extract_text(value):
                 return value[key]
         return json.dumps(value)
     return str(value) if value else ""
-
 
 def _call_groq(messages: list) -> tuple[str, str]:
     payload = {
@@ -93,9 +90,7 @@ def _call_groq(messages: list) -> tuple[str, str]:
         logger.error(f"Groq API error: {e}")
         return "", str(e)
 
-
 def clean_json_output(raw_text: str, language: str) -> dict:
-    # Expect JSON for both English and Arabic now
     try:
         parsed = json.loads(raw_text)
         if isinstance(parsed, dict):
@@ -106,9 +101,7 @@ def clean_json_output(raw_text: str, language: str) -> dict:
             }
     except json.JSONDecodeError:
         pass
-    # Fallback: put full text into content
     return {"title": "", "description": "", "content": raw_text.strip()}
-
 
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
@@ -123,19 +116,18 @@ def search_cartoon_image(query: str) -> str | None:
         logger.error(f"Pixabay search failed: {e}")
         return None
 
-# Prompt builder
 def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language: str) -> list:
     persona = random.choice(SYSTEM_PERSONAS[language])
     therapy = THERAPY_INSTRUCTIONS[category][language]
     if language == 'english':
         user_instr = (
             f"User Mood: {mood}, Sleep Quality: {sleep_quality}." 
-            " Create a bedtime story. Return strictly valid JSON with fields `title`, `description`, and `content`."
+            " Create a bedtime story. Return strictly valid JSON with fields title, description, and content."
         )
     else:
         user_instr = (
             f"مزاج المستخدم: {mood}، جودة النوم: {sleep_quality}."
-            " اكتب قصة نوم باللغة العربية. أعد استجابة بصيغة JSON تتضمن الحقول `title` و `description` و `content`."
+            " اكتب قصة نوم باللغة العربية. أعد استجابة بصيغة JSON تتضمن الحقول title و description و content."
         )
     return [
         {"role": "system", "content": persona},
@@ -143,7 +135,6 @@ def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language:
         {"role": "user", "content": user_instr}
     ]
 
-# Routes
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
     data = request.get_json() or {}
@@ -161,7 +152,7 @@ def generate_stories():
             logger.error("Error generating story %d: %s", i, err)
             continue
         parsed = clean_json_output(raw, language)
-        title = parsed.get("title") or f"Dream #{i+1}" if language=='english' else parsed.get("title") or f"حلم #{i+1}"
+        title = parsed.get("title") or f"Dream #{i+1}" if language == 'english' else f"حلم #{i+1}"
         base, suffix = title, 2
         while title in seen:
             title = f"{base} ({suffix})"
@@ -189,7 +180,7 @@ def generate_story_and_image():
     if err:
         return jsonify(error=err), 500
     parsed = clean_json_output(raw, language)
-    title = parsed.get("title") or (language=='english' and "Dream" or "حلم")
+    title = parsed.get("title") or ("Dream" if language == 'english' else "حلم")
     return jsonify({
         "title": title,
         "description": parsed.get("description", ""),
@@ -229,10 +220,6 @@ def chat():
         return jsonify(error=err), 500
     return jsonify(response=response)
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-    app.run(host="0.0.0.0", port=port)
-
-

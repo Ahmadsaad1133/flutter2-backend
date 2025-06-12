@@ -1,17 +1,16 @@
 import json
 import os
-import random
-import logging
-import re
-import requests
 from flask import Flask, request, jsonify
+import requests
 from flask_cors import CORS
+import logging
+import random
 
-app = Flask(_name_)
-CORS(app, resources={r"/": {"origins": ""}})
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(_name_)
+logger = logging.getLogger(__name__)
 
 groq_api_key = os.getenv("GROQ_API_KEY")
 pixabay_api_key = os.getenv("PIXABAY_API_KEY")
@@ -19,121 +18,85 @@ pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
-# Mood Analyzer
-typing_pattern = re.compile(r"[؀-ۿ]")
-class MoodAnalyzer:
-    MOOD_KEYWORDS = {
-        "anger": ["angry", "mad", "furious", "rage", "غاضب", "عصبي", "منفعل"],
-        "sadness": ["sad", "depressed", "crying", "broken", "حزين", "مكسور", "كئيب"],
-        "stress": ["stressed", "anxious", "nervous", "توتر", "قلق", "مضغوط"],
-        "lonely": ["lonely", "alone", "isolated", "وحيد", "عزلة", "منعزل"],
-        "sexual": ["aroused", "sensual", "horny", "جنسي", "مثير", "رغبة"]
-    }
-    GENERAL_CATEGORY = "general"
-
-    @classmethod
-    def detect_language(cls, text: str) -> str:
-        return 'arabic' if typing_pattern.search(text) else 'english'
-
-    @classmethod
-    def categorize(cls, raw_mood: str) -> tuple[str, str]:
-        lang = cls.detect_language(raw_mood)
-        rm = raw_mood.lower()
-        for category, keywords in cls.MOOD_KEYWORDS.items():
-            if any(kw in rm for kw in keywords):
-                return category, lang
-        return cls.GENERAL_CATEGORY, lang
-
-THERAPY_INSTRUCTIONS = {
-    "anger": {"english": "I see you're feeling angry...", "arabic": "أرى أنك غاضب..."},
-    "sadness": {"english": "I see you're feeling sad...", "arabic": "أشعر أنك حزين..."},
-    "stress": {"english": "I see you're stressed...", "arabic": "أشعر أنك متوتر..."},
-    "lonely": {"english": "Feeling lonely is hard...", "arabic": "الوحدة صعبة..."},
-    "sexual": {"english": "Let's redirect those thoughts...", "arabic": "دعنا نحول هذه المشاعر..."},
-    "general": {"english": "You're looking for a calming bedtime story...", "arabic": "تبحث عن قصة هادئة تساعدك على النوم..."},
-}
-
-SYSTEM_PERSONAS = {
-    "english": ["You are Nightingale, a wise and gentle storyteller for children and adults."],
-    "arabic": ["أنت Nightingale، راوي حكايات هادئ وحنون يساعد الناس على النوم."]
-}
-
 def extract_text(value):
     if isinstance(value, str):
         return value
-    if isinstance(value, dict):
-        for key in ("text", "content", "title", "description", "value"):
+    elif isinstance(value, dict):
+        for key in ['text', 'content', 'en', 'value']:
             if key in value and isinstance(value[key], str):
                 return value[key]
         return json.dumps(value)
-    return str(value) if value else ""
+    else:
+        return str(value) if value is not None else ''
 
-def _call_groq(messages: list) -> tuple[str, str]:
-    payload = {
-        "model": "llama3-70b-8192",
-        "messages": messages,
-        "temperature": 1.0,
-        "top_p": 0.9,
-        "max_tokens": 700
-    }
+def _call_groq(user_prompt: str) -> (str, str):
     try:
+        messages = [
+            {"role": "system", "content": "You are Silent Veil, a calm sleep coach assistant."},
+            {"role": "user", "content": user_prompt}
+        ]
+        payload = {
+            "model": "llama3-70b-8192",
+            "messages": messages,
+            "temperature": 0.95,
+            "max_tokens": 600
+        }
         res = requests.post(
             GROQ_API_URL,
             headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
             json=payload,
             timeout=20
         )
-        res.raise_for_status()
+        if res.status_code != 200:
+            logger.error(f"Groq API error: {res.status_code} - {res.text}")
+            return None, f"Groq API error: {res.status_code}"
         data = res.json()
-        return data["choices"][0]["message"]["content"].strip(), None
+        content = data.get("choices", [])[0].get("message", {}).get("content")
+        if not content:
+            return None, "Empty response from Groq"
+        return content.strip(), None
     except Exception as e:
-        logger.error(f"Groq API error: {e}")
-        return "", str(e)
+        logger.error(f"Groq call failed: {e}")
+        return None, str(e)
 
-def clean_json_output(raw_text: str, language: str) -> dict:
+def clean_json_output(json_text: str) -> dict:
     try:
-        parsed = json.loads(raw_text)
+        parsed = json.loads(json_text)
         if isinstance(parsed, dict):
-            return {
-                "title": extract_text(parsed.get("title", "")),
-                "description": extract_text(parsed.get("description", "")),
-                "content": extract_text(parsed.get("content", raw_text))
-            }
-    except json.JSONDecodeError:
-        pass
-    return {"title": "", "description": "", "content": raw_text.strip()}
+            content = parsed.get("content", "")
+            if isinstance(content, dict):
+                parsed["content"] = json.dumps(content, indent=2)
+        return parsed
+    except Exception:
+        return {
+            "title": "Oneiric Dream",
+            "description": "A calm bedtime story.",
+            "content": json_text
+        }
 
 def search_cartoon_image(query: str) -> str | None:
     if not pixabay_api_key:
+        logger.error("Missing PIXABAY_API_KEY environment variable.")
         return None
-    params = {"key": pixabay_api_key, "q": query, "image_type": "illustration", "per_page": 10, "safesearch": "true"}
+    params = {
+        "key": pixabay_api_key,
+        "q": query,
+        "image_type": "illustration",
+        "per_page": 10,
+        "safesearch": "true"
+    }
     try:
         resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=10)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.error(f"Pixabay API error {resp.status_code}: {resp.text}")
+            return None
         hits = resp.json().get("hits", [])
-        return random.choice(hits).get("webformatURL") if hits else None
+        if not hits:
+            return None
+        return random.choice(hits).get("webformatURL")
     except Exception as e:
         logger.error(f"Pixabay search failed: {e}")
         return None
-
-def build_prompt(i: int, mood: str, sleep_quality: str, category: str, language: str) -> list:
-    persona = random.choice(SYSTEM_PERSONAS[language])
-    therapy = THERAPY_INSTRUCTIONS[category][language]
-    if language == 'english':
-        user_instr = (
-            f"User Mood: {mood}, Sleep Quality: {sleep_quality}." 
-            " Create a bedtime story. Return strictly valid JSON with fields title, description, and content."
-        )
-    else:
-        user_instr = (
-            f"مزاج المستخدم: {mood}، جودة النوم: {sleep_quality}."
-            " اكتب قصة نوم باللغة العربية. أعد استجابة بصيغة JSON تتضمن الحقول title و description و content."
-        )
-    return [
-        {"role": "system", "content": persona},
-        {"role": "system", "content": therapy},
-        {"role": "user", "content": user_instr}
-    ]
 
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
@@ -141,85 +104,83 @@ def generate_stories():
     mood = data.get("mood", "").strip()
     sleep_quality = data.get("sleep_quality", "").strip()
     count = int(data.get("count", 5))
+
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
-    category, language = MoodAnalyzer.categorize(mood)
-    stories, seen = [], set()
+
+    stories = []
+    seen_titles = set()
+
     for i in range(count):
-        msgs = build_prompt(i, mood, sleep_quality, category, language)
-        raw, err = _call_groq(msgs)
-        if err:
-            logger.error("Error generating story %d: %s", i, err)
-            continue
-        parsed = clean_json_output(raw, language)
-        title = parsed.get("title") or f"Dream #{i+1}" if language == 'english' else f"حلم #{i+1}"
-        base, suffix = title, 2
-        while title in seen:
-            title = f"{base} ({suffix})"
+        prompt = (
+            f"You are Silent Veil, a calm sleep coach. Based solely on the user's mood '{mood}' "
+            f"and sleep quality '{sleep_quality}', create a unique bedtime story #{i+1}. "
+            "Ensure the story has a completely original and distinct **title** that has not been used in previous stories. "
+            "Each story must have a unique setting, different characters, and a varied emotional tone. "
+            "Avoid reusing any structure, names, or phrases. "
+            "Format the output as flat JSON with fields: title, description, content. "
+            "All values must be plain strings. No markdown or nested data."
+        )
+
+        story_json_str, err = _call_groq(prompt)
+        story_data = clean_json_output(story_json_str or "")
+
+        raw_title = extract_text(story_data.get("title", f"Oneiric Journey #{i+1}")).strip()
+        unique_title = raw_title
+        suffix = 2
+        while unique_title in seen_titles:
+            unique_title = f"{raw_title} ({suffix})"
             suffix += 1
-        seen.add(title)
+        seen_titles.add(unique_title)
+
+        description = extract_text(story_data.get("description", "")).strip()
+        content = extract_text(story_data.get("content", "")).strip()
+        image_url = search_cartoon_image(unique_title or mood) or ""
+        duration = random.choice([4, 5, 6])
+
         stories.append({
-            "title": title,
-            "description": parsed.get("description", ""),
-            "content": parsed.get("content", ""),
-            "imageUrl": search_cartoon_image(title),
-            "durationMinutes": random.choice([4, 5, 6])
+            "title": unique_title,
+            "description": description,
+            "content": content,
+            "imageUrl": image_url,
+            "durationMinutes": duration
         })
+
+    if not stories:
+        return jsonify(error="Failed to generate stories"), 500
+
     return jsonify(stories=stories)
 
 @app.route("/generate-story-and-image", methods=["POST"])
 def generate_story_and_image():
     data = request.get_json() or {}
     mood = data.get("mood", "").strip()
-    sq = data.get("sleep_quality", "").strip()
-    if not mood or not sq:
-        return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
-    category, language = MoodAnalyzer.categorize(mood)
-    msgs = build_prompt(1, mood, sq, category, language)
-    raw, err = _call_groq(msgs)
-    if err:
-        return jsonify(error=err), 500
-    parsed = clean_json_output(raw, language)
-    title = parsed.get("title") or ("Dream" if language == 'english' else "حلم")
-    return jsonify({
-        "title": title,
-        "description": parsed.get("description", ""),
-        "content": parsed.get("content", ""),
-        "imageUrl": search_cartoon_image(mood),
-        "durationMinutes": random.choice([4, 5, 6])
-    })
-
-@app.route("/analyze", methods=["POST"])
-def analyze():
-    data = request.get_json() or {}
-    mood = data.get("mood", "").strip()
     sleep_quality = data.get("sleep_quality", "").strip()
     if not mood or not sleep_quality:
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
-    messages = [
-        {"role": "system", "content": "You are a sleep therapist who gives clear advice based on user mood and sleep quality."},
-        {"role": "user",   "content": f"My mood is '{mood}' and my sleep quality is '{sleep_quality}'. Can you give me insights and tips?"}
-    ]
-    response, err = _call_groq(messages)
-    if err:
-        logger.error("Groq analyze error: %s", err)
-        return jsonify(error="Failed to get analysis"), 500
-    return jsonify(analysis=response)
 
-@app.route("/chat", methods=["POST"])
-def chat():
-    data = request.get_json() or {}
-    history = data.get("history", [])
-    if not isinstance(history, list) or not history:
-        return jsonify(error="Missing or invalid 'history'"), 400
-    system_prompt = {"role": "system", "content": "You are Nightingale, a wise and gentle sleep coach who responds based on the conversation so far."}
-    messages = [system_prompt] + history
-    response, err = _call_groq(messages)
-    if err:
-        logger.error("Groq chat error: %s", err)
-        return jsonify(error=err), 500
-    return jsonify(response=response)
+    prompt = (
+        f"You are Silent Veil. Based on mood '{mood}' and sleep quality '{sleep_quality}', "
+        "create a calming, unique bedtime story. Respond in JSON with title, description, and plain natural language content. "
+        "All fields must be plain strings. Do not return code, markdown, or nested objects."
+    )
+    story_json_str, err = _call_groq(prompt)
+    story_data = clean_json_output(story_json_str or "")
 
-if _name_ == "_main_":
+    title = extract_text(story_data.get("title", "Oneiric Dream")).strip()
+    description = extract_text(story_data.get("description", "")).strip()
+    content = extract_text(story_data.get("content", "")).strip()
+    image_url = search_cartoon_image(title or mood) or ""
+    duration = random.choice([4, 5, 6])
+
+    return jsonify({
+        "title": title,
+        "description": description,
+        "content": content,
+        "imageUrl": image_url,
+        "durationMinutes": duration
+    })
+
+if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)      

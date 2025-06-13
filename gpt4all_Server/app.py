@@ -232,7 +232,7 @@ def generate_story_and_image():
 
 @app.route("/sleep-analysis", methods=["POST"])
 def sleep_analysis():
-    """Analyze sleep logs like a professional sleep doctor."""
+    """Analyze sleep logs with clinical precision."""
     data = request.get_json() or {}
     sleep_data = data.get("sleep_data", {})
     
@@ -242,44 +242,43 @@ def sleep_analysis():
     try:
         # Build medical-grade analysis prompt
         prompt = (
-            "You are Dr. Somnus, a board-certified sleep medicine specialist with 20 years of clinical experience. "
-            "A patient has provided their sleep data below. Conduct a thorough medical analysis following these steps:\n\n"
+            "You are Dr. Somnus, a board-certified sleep medicine specialist with 20 years of experience. "
+            "Conduct a clinical analysis of this patient's sleep data using ICSD-3 diagnostic criteria and AASM guidelines.\n\n"
             
-            "1. **Data Verification**: Check for inconsistencies or missing data\n"
-            "2. **Pattern Identification**: Identify key patterns across all parameters\n"
-            "3. **Clinical Correlation**: Relate findings to established sleep medicine principles\n"
-            "4. **Evidence-Based Assessment**: Formulate diagnosis based on ICSD-3 criteria\n"
-            "5. **Personalized Recommendations**: Create targeted interventions\n\n"
+            "**ANALYSIS PROTOCOL**:\n"
+            "1. Calculate sleep efficiency: (TST / TIB) × 100\n"
+            "2. Assess sleep continuity: WASO, SOL, sleep fragmentation index\n"
+            "3. Evaluate circadian rhythm consistency\n"
+            "4. Analyze lifestyle factors against clinical thresholds\n"
+            "5. Formulate diagnosis based on quantitative metrics\n\n"
             
-            "**Structure your report with these exact sections**:\n"
-            "### Clinical Summary\n"
-            "### Key Findings (use bullet points)\n"
-            "### Diagnostic Impression\n"
+            "**REQUIRED SECTIONS**:\n"
+            "### Quantitative Analysis\n"
+            "### Diagnostic Impression (ICSD-3 codes)\n"
             "### Severity Assessment (mild/moderate/severe)\n"
-            "### Evidence-Based Recommendations\n"
-            "### Potential Comorbidities\n"
-            "### Referral Indications\n\n"
+            "### Evidence-Based Treatment Plan\n"
+            "### Prognosis\n"
+            "### Referral Recommendations\n\n"
             
-            "**Data Analysis Rules**:\n"
-            "- Focus EXCLUSIVELY on provided data\n"
-            "- Quantify all observations (e.g., 'Sleep latency increased by 40%')\n"
-            "- Use medical terminology (PSG, SOL, WASO, SE)\n"
-            "- Cite research when possible (e.g., 'Per AASM guidelines...')\n"
-            "- Never invent symptoms or data\n"
-            "- Include numeric calculations where possible\n\n"
+            "**DATA RULES**:\n"
+            "- Use ONLY provided data\n"
+            "- Include calculations for all metrics\n"
+            "- Reference clinical thresholds (AASM)\n"
+            "- Never speculate beyond data\n"
+            "- Quantify all observations\n\n"
             
-            "**Key Medical Terminology**:\n"
-            "- PSG: Polysomnography\n"
+            "**KEY MEDICAL TERMS**:\n"
+            "- TST: Total Sleep Time\n"
+            "- TIB: Time In Bed\n"
+            "- SE: Sleep Efficiency\n"
             "- SOL: Sleep Onset Latency\n"
             "- WASO: Wake After Sleep Onset\n"
-            "- SE: Sleep Efficiency\n"
-            "- TST: Total Sleep Time\n"
             "- AHI: Apnea-Hypopnea Index\n\n"
             
             "Patient's Sleep Data:\n"
             f"{json.dumps(sleep_data, indent=2)}\n\n"
             
-            "**Begin your analysis now**:"
+            "**Begin clinical analysis**:"
         )
         
         # Get analysis from Groq
@@ -300,5 +299,4 @@ def health_check():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=os.getenv("DEBUG", "false").lower() == "true")
     app.run(host="0.0.0.0", port=port, debug=os.getenv("DEBUG", "false").lower() == "true")

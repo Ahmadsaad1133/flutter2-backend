@@ -254,19 +254,42 @@ def generate_story_and_image():
 def sleep_analysis():
     """Analyze sleep logs with clinical precision."""
     data = request.get_json() or {}
-    sleep_data = data.get("sleep_data", {})
     
-    logger.info(f"Received sleep analysis request: {sleep_data}")
+    logger.info(f"Received sleep analysis request: {data}")
+    
+    # More flexible input handling
+    sleep_data = data.get("sleep_data")
+    if sleep_data is None:
+        # If sleep_data key is missing, try using the root object
+        sleep_data = data
+        logger.info("Using root object as sleep_data")
     
     if not sleep_data:
-        logger.warning("Sleep analysis called with empty sleep_data")
-        return jsonify(error="Missing 'sleep_data'"), 400
+        logger.warning("Sleep analysis called with empty input")
+        return jsonify(
+            error="Missing sleep data",
+            details="Please provide sleep_data or parameters in the request body",
+            code="SleepAnalysisException"
+        ), 400
     
     try:
-        # Enhanced input validation
-        if not isinstance(sleep_data, dict):
+        # Handle different input formats
+        if isinstance(sleep_data, str):
+            # Convert string to symptom list
+            logger.info("Converting string input to symptom list")
+            symptoms = [s.strip() for s in sleep_data.split(",") if s.strip()]
+            sleep_data = {"symptoms": symptoms}
+        elif isinstance(sleep_data, list):
+            # Handle array input
+            logger.info("Converting array input to symptom list")
+            sleep_data = {"symptoms": [str(item) for item in sleep_data]}
+        elif not isinstance(sleep_data, dict):
             logger.error(f"Invalid sleep_data type: {type(sleep_data)}")
-            return jsonify(error="'sleep_data' must be a JSON object"), 400
+            return jsonify(
+                error="Invalid input format",
+                details="sleep_data must be a JSON object, string, or array",
+                code="SleepAnalysisException"
+            ), 400
         
         # Detect input type with more robust checking
         quantitative_keys = ['TST', 'TIB', 'SE', 'SOL', 'WASO', 'AHI', 'sleep_efficiency']
@@ -294,11 +317,14 @@ def sleep_analysis():
             symptoms = sleep_data.get("symptoms", [])
             if not symptoms:
                 # Extract all string values as symptoms
-                symptoms = [v for k, v in sleep_data.items() if isinstance(v, str)]
+                symptoms = [str(v) for k, v in sleep_data.items() if isinstance(v, (str, int, float))]
             
             if not symptoms:
                 logger.error("No symptoms found in sleep_data")
-                return jsonify(error="No symptoms provided for analysis"), 400
+                return jsonify(
+                    error="No symptoms provided for analysis",
+                    code="SleepAnalysisException"
+                ), 400
             
             logger.info(f"Analyzing symptoms: {', '.join(symptoms)}")
             prompt = (
@@ -359,7 +385,15 @@ def health_check():
             "/generate-stories (POST)",
             "/generate-story-and-image (POST)",
             "/sleep-analysis (POST)"
-        ]
+        ],
+        "input_formats": {
+            "sleep-analysis": [
+                '{"sleep_data": {"symptoms": ["Snoring", "Frequent Bathroom"]}}',
+                '{"symptoms": ["Restless Legs", "Pain"]}',
+                '"Snoring, Frequent Bathroom"',
+                '["Restless Legs", "Pain"]'
+            ]
+        }
     }
     return jsonify(status)
 

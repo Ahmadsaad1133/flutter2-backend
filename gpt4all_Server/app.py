@@ -2,6 +2,7 @@ import json
 import os
 import logging
 import random
+import traceback
 from flask import Flask, request, jsonify
 import requests
 from flask_cors import CORS
@@ -9,7 +10,11 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-logging.basicConfig(level=logging.INFO)
+# Configure enhanced logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Load API keys from environment variables
@@ -52,16 +57,19 @@ def call_groq(user_prompt: str) -> (str, str):
             timeout=30
         )
         if res.status_code != 200:
-            logger.error(f"Groq API error: {res.status_code} - {res.text}")
-            return None, f"Groq API error: {res.status_code}"
+            error_msg = f"Groq API error: {res.status_code} - {res.text[:200]}"
+            logger.error(error_msg)
+            return None, error_msg
+        
         data = res.json()
         content = data.get("choices", [])[0].get("message", {}).get("content")
         if not content:
             return None, "Empty response from Groq"
         return content.strip(), None
     except Exception as e:
-        logger.error(f"Groq call failed: {e}")
-        return None, str(e)
+        error_msg = f"Groq call failed: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return None, error_msg
 
 def clean_json_output(json_text: str) -> dict:
     """Handle different JSON response formats."""
@@ -98,7 +106,7 @@ def search_cartoon_image(query: str) -> str | None:
     try:
         resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=15)
         if resp.status_code != 200:
-            logger.error(f"Pixabay API error {resp.status_code}: {resp.text}")
+            logger.error(f"Pixabay API error {resp.status_code}: {resp.text[:200]}")
             return None
         hits = resp.json().get("hits", [])
         if not hits:
@@ -116,6 +124,7 @@ def chat():
     prompt = data.get("prompt", "").strip()
     
     if not prompt:
+        logger.warning("Chat request with empty prompt")
         return jsonify(error="Missing 'prompt'"), 400
     
     response, error = call_groq(prompt)
@@ -132,6 +141,7 @@ def generate_story():
     sleep_quality = data.get("sleep_quality", "").strip()
     
     if not mood or not sleep_quality:
+        logger.warning("Generate story request missing parameters")
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
     prompt = (
@@ -155,6 +165,7 @@ def generate_stories():
     count = int(data.get("count", 5))
 
     if not mood or not sleep_quality:
+        logger.warning("Generate stories request missing parameters")
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
     stories = []
@@ -169,6 +180,10 @@ def generate_stories():
         )
 
         story_json_str, err = call_groq(prompt)
+        if err:
+            logger.error(f"Story generation failed: {err}")
+            continue
+            
         story_data = clean_json_output(story_json_str or "")
 
         raw_title = extract_text(story_data.get("title", f"Oneiric Journey #{i+1}")).strip()
@@ -193,7 +208,7 @@ def generate_stories():
         })
 
     if not stories:
-        return jsonify(error="Failed to generate stories"), 500
+        return jsonify(error="Failed to generate any stories"), 500
 
     return jsonify(stories=stories)
 
@@ -205,6 +220,7 @@ def generate_story_and_image():
     sleep_quality = data.get("sleep_quality", "").strip()
     
     if not mood or not sleep_quality:
+        logger.warning("Generate story+image request missing parameters")
         return jsonify(error="Missing 'mood' or 'sleep_quality'"), 400
 
     prompt = (
@@ -214,6 +230,10 @@ def generate_story_and_image():
     )
     
     story_json_str, err = call_groq(prompt)
+    if err:
+        logger.error(f"Story+image generation failed: {err}")
+        return jsonify(error=err), 500
+        
     story_data = clean_json_output(story_json_str or "")
 
     title = extract_text(story_data.get("title", "Oneiric Dream")).strip()
@@ -236,18 +256,28 @@ def sleep_analysis():
     data = request.get_json() or {}
     sleep_data = data.get("sleep_data", {})
     
+    logger.info(f"Received sleep analysis request: {sleep_data}")
+    
     if not sleep_data:
+        logger.warning("Sleep analysis called with empty sleep_data")
         return jsonify(error="Missing 'sleep_data'"), 400
     
     try:
-        # Detect input type (quantitative metrics or symptom tags)
-        is_quantitative = any(key in sleep_data for key in ['TST', 'TIB', 'SE', 'SOL', 'WASO', 'AHI'])
+        # Enhanced input validation
+        if not isinstance(sleep_data, dict):
+            logger.error(f"Invalid sleep_data type: {type(sleep_data)}")
+            return jsonify(error="'sleep_data' must be a JSON object"), 400
+        
+        # Detect input type with more robust checking
+        quantitative_keys = ['TST', 'TIB', 'SE', 'SOL', 'WASO', 'AHI', 'sleep_efficiency']
+        is_quantitative = any(key in sleep_data for key in quantitative_keys)
         
         # Build dynamic prompt based on input type
         if is_quantitative:
+            logger.info("Processing quantitative sleep data")
             prompt = (
                 "You are Dr. Somnus, a board-certified sleep specialist. Analyze this quantitative sleep data:\n\n"
-                "1. Calculate sleep efficiency: (TST / TIB) × 100\n"
+                "1. Calculate sleep efficiency: (TST / TIB) × 100 (if not provided)\n"
                 "2. Assess sleep continuity metrics\n"
                 "3. Compare against AASM clinical thresholds\n"
                 "4. Identify potential sleep disorders\n"
@@ -260,11 +290,17 @@ def sleep_analysis():
             )
         else:
             # Handle symptom-based input
+            logger.info("Processing symptom-based sleep data")
             symptoms = sleep_data.get("symptoms", [])
             if not symptoms:
-                # Try to extract symptoms if they're in the root object
-                symptoms = [v for k, v in sleep_data.items() if k != "symptoms" and isinstance(v, str)]
+                # Extract all string values as symptoms
+                symptoms = [v for k, v in sleep_data.items() if isinstance(v, str)]
             
+            if not symptoms:
+                logger.error("No symptoms found in sleep_data")
+                return jsonify(error="No symptoms provided for analysis"), 400
+            
+            logger.info(f"Analyzing symptoms: {', '.join(symptoms)}")
             prompt = (
                 "You are Dr. Somnus, a board-certified sleep specialist. "
                 "Analyze these patient-reported symptoms:\n\n"
@@ -279,23 +315,56 @@ def sleep_analysis():
             )
         
         # Get analysis from Groq
+        logger.debug(f"Sending prompt to Groq API: {prompt[:200]}...")
         analysis, error = call_groq(prompt)
         if error:
-            return jsonify(error=error), 500
-        if not analysis:
-            return jsonify(error="Empty analysis response"), 500
+            logger.error(f"Groq API failure: {error}")
+            return jsonify(
+                error="Analysis service error",
+                details=error,
+                code="SleepAnalysisException"
+            ), 500
             
+        if not analysis:
+            logger.error("Empty analysis response from Groq")
+            return jsonify(
+                error="Analysis service returned empty response",
+                code="SleepAnalysisException"
+            ), 500
+        
+        logger.info("Successfully generated sleep analysis")
         return jsonify(analysis=analysis)
         
     except Exception as e:
-        logger.error(f"Sleep analysis failed: {e}")
-        return jsonify(error="Internal server error"), 500
+        logger.error(f"Sleep analysis failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify(
+            error="Sleep analysis failed",
+            details=str(e),
+            code="SleepAnalysisException"
+        ), 500
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Simple health check endpoint."""
-    return jsonify(status="ok", groq_ready=bool(groq_api_key))
+    """Enhanced health check endpoint."""
+    status = {
+        "status": "ok",
+        "services": {
+            "groq": "available" if groq_api_key else "missing_api_key",
+            "pixabay": "available" if pixabay_api_key else "missing_api_key"
+        },
+        "endpoints": [
+            "/chat (POST)",
+            "/generate (POST)",
+            "/generate-stories (POST)",
+            "/generate-story-and-image (POST)",
+            "/sleep-analysis (POST)"
+        ]
+    }
+    return jsonify(status)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=os.getenv("DEBUG", "false").lower() == "true")
+    debug_mode = os.getenv("DEBUG", "false").lower() == "true"
+    logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)

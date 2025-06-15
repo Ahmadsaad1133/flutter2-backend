@@ -240,51 +240,50 @@ def sleep_analysis():
         return jsonify(error="Missing 'sleep_data'"), 400
     
     try:
-        # Build medical-grade analysis prompt
-        prompt = (
-            "You are Dr. Somnus, a board-certified sleep medicine specialist with 20 years of experience. "
-            "Conduct a clinical analysis of this patient's sleep data using ICSD-3 diagnostic criteria and AASM guidelines.\n\n"
+        # Detect input type (quantitative metrics or symptom tags)
+        is_quantitative = any(key in sleep_data for key in ['TST', 'TIB', 'SE', 'SOL', 'WASO', 'AHI'])
+        
+        # Build dynamic prompt based on input type
+        if is_quantitative:
+            prompt = (
+                "You are Dr. Somnus, a board-certified sleep specialist. Analyze this quantitative sleep data:\n\n"
+                "1. Calculate sleep efficiency: (TST / TIB) × 100\n"
+                "2. Assess sleep continuity metrics\n"
+                "3. Compare against AASM clinical thresholds\n"
+                "4. Identify potential sleep disorders\n"
+                "5. Provide evidence-based recommendations\n\n"
+                "Required sections:\n"
+                "### Quantitative Analysis\n"
+                "### Clinical Assessment\n"
+                "### Treatment Recommendations\n\n"
+                f"Data: {json.dumps(sleep_data)}"
+            )
+        else:
+            # Handle symptom-based input
+            symptoms = sleep_data.get("symptoms", [])
+            if not symptoms:
+                # Try to extract symptoms if they're in the root object
+                symptoms = [v for k, v in sleep_data.items() if k != "symptoms" and isinstance(v, str)]
             
-            "**ANALYSIS PROTOCOL**:\n"
-            "1. Calculate sleep efficiency: (TST / TIB) × 100\n"
-            "2. Assess sleep continuity: WASO, SOL, sleep fragmentation index\n"
-            "3. Evaluate circadian rhythm consistency\n"
-            "4. Analyze lifestyle factors against clinical thresholds\n"
-            "5. Formulate diagnosis based on quantitative metrics\n\n"
-            
-            "**REQUIRED SECTIONS**:\n"
-            "### Quantitative Analysis\n"
-            "### Diagnostic Impression (ICSD-3 codes)\n"
-            "### Severity Assessment (mild/moderate/severe)\n"
-            "### Evidence-Based Treatment Plan\n"
-            "### Prognosis\n"
-            "### Referral Recommendations\n\n"
-            
-            "**DATA RULES**:\n"
-            "- Use ONLY provided data\n"
-            "- Include calculations for all metrics\n"
-            "- Reference clinical thresholds (AASM)\n"
-            "- Never speculate beyond data\n"
-            "- Quantify all observations\n\n"
-            
-            "**KEY MEDICAL TERMS**:\n"
-            "- TST: Total Sleep Time\n"
-            "- TIB: Time In Bed\n"
-            "- SE: Sleep Efficiency\n"
-            "- SOL: Sleep Onset Latency\n"
-            "- WASO: Wake After Sleep Onset\n"
-            "- AHI: Apnea-Hypopnea Index\n\n"
-            
-            "Patient's Sleep Data:\n"
-            f"{json.dumps(sleep_data, indent=2)}\n\n"
-            
-            "**Begin clinical analysis**:"
-        )
+            prompt = (
+                "You are Dr. Somnus, a board-certified sleep specialist. "
+                "Analyze these patient-reported symptoms:\n\n"
+                "1. Identify potential sleep disorders (use ICSD-3 terminology)\n"
+                "2. Relate symptoms to possible physiological causes\n"
+                "3. Provide clinical recommendations\n\n"
+                "Required sections:\n"
+                "### Symptom Analysis\n"
+                "### Clinical Assessment\n"
+                "### Personalized Recommendations\n\n"
+                f"Symptoms: {', '.join(symptoms)}"
+            )
         
         # Get analysis from Groq
         analysis, error = call_groq(prompt)
         if error:
             return jsonify(error=error), 500
+        if not analysis:
+            return jsonify(error="Empty analysis response"), 500
             
         return jsonify(analysis=analysis)
         
@@ -299,4 +298,4 @@ def health_check():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=os.getenv("DEBUG", "false").lower() == "true")                
+    app.run(host="0.0.0.0", port=port, debug=os.getenv("DEBUG", "false").lower() == "true")

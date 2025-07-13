@@ -117,6 +117,21 @@ def search_cartoon_image(query: str) -> str | None:
         logger.error(f"Pixabay search failed: {e}")
         return None
 
+@app.route("/", methods=["GET"])
+def root():
+    """Root endpoint with basic info."""
+    return jsonify({
+        "message": "Silent Veil backend is online 💤",
+        "available_routes": [
+            "/chat",
+            "/generate",
+            "/generate-stories",
+            "/generate-story-and-image",
+            "/sleep-analysis",
+            "/health"
+        ]
+    }), 200
+
 @app.route("/chat", methods=["POST"])
 def chat():
     """Handle general chat requests."""
@@ -402,3 +417,4 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+

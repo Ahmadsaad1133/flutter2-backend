@@ -6,6 +6,7 @@ import traceback
 from flask import Flask, request, jsonify
 import requests
 from flask_cors import CORS
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -117,6 +118,84 @@ def search_cartoon_image(query: str) -> str | None:
         logger.error(f"Pixabay search failed: {e}")
         return None
 
+# ---------- helpers for compare ----------
+def _num_or_0(v):
+    try:
+        if v is None: return 0.0
+        if isinstance(v, (int, float)): return float(v)
+        return float(str(v))
+    except Exception:
+        return 0.0
+
+def _minutes_between(start_iso: str | None, end_iso: str | None) -> int:
+    """Compute minutes between two ISO strings; handles cross-midnight."""
+    try:
+        if not start_iso or not end_iso: return 0
+        s = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
+        e = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+        if e < s:
+            e = e + timedelta(days=1)
+        return int((e - s).total_seconds() // 60)
+    except Exception:
+        return 0
+
+def _pick_metric(log: dict) -> float:
+    """
+    Choose a single numeric metric to compare between two logs.
+    Priority:
+      1) sleep_score
+      2) duration_minutes (or computed from bedtime/wake_time)
+      3) sum of stage minutes (deep/rem/light)
+      4) quality * duration (last resort)
+    """
+    # 1) sleep_score if present
+    score = _num_or_0(log.get('sleep_score'))
+    if score > 0:
+        return score
+
+    # 2) duration_minutes or compute from bedtime/wake_time
+    duration = _num_or_0(log.get('duration_minutes'))
+    if duration <= 0:
+        # try to compute from your schema: bedtime & wake_time are strings like "23:30"
+        bed = log.get('bedtime')
+        wake = log.get('wake_time')
+        # If frontend sanitized to ISO, use those instead if available
+        bed_iso = log.get('bedTime') or log.get('bed_time') or log.get('sleepStart') or log.get('sleep_start')
+        wake_iso = log.get('wakeTime') or log.get('wake_time') or log.get('sleepEnd') or log.get('sleep_end')
+
+        # Prefer ISO when available
+        if isinstance(bed_iso, str) and isinstance(wake_iso, str):
+            duration = float(_minutes_between(bed_iso, wake_iso))
+        else:
+            # fallback: parse "HH:mm"
+            try:
+                def _hm_to_min(txt):
+                    hh, mm = txt.split(':')
+                    return int(hh) * 60 + int(mm)
+                if isinstance(bed, str) and isinstance(wake, str) and ':' in bed and ':' in wake:
+                    b = _hm_to_min(bed)
+                    w = _hm_to_min(wake)
+                    duration = float(w - b) if w > b else float((24*60 - b) + w)
+            except Exception:
+                duration = 0.0
+    if duration > 0:
+        return duration
+
+    # 3) stage minutes
+    deep  = _num_or_0(log.get('deep_sleep_minutes'))
+    rem   = _num_or_0(log.get('rem_sleep_minutes'))
+    light = _num_or_0(log.get('light_sleep_minutes'))
+    stages_total = deep + rem + light
+    if stages_total > 0:
+        return stages_total
+
+    # 4) quality * duration (if both exist)
+    quality = _num_or_0(log.get('quality'))
+    if quality > 0 and duration > 0:
+        return quality * duration
+
+    return 0.0
+
 @app.route("/", methods=["GET"])
 def root():
     """Root endpoint with basic info."""
@@ -128,6 +207,7 @@ def root():
             "/generate-stories",
             "/generate-story-and-image",
             "/sleep-analysis",
+            "/compare-sleep-logs",
             "/health"
         ]
     }), 200
@@ -385,6 +465,48 @@ def sleep_analysis():
             code="SleepAnalysisException"
         ), 500
 
+# ---------- New: Compare Sleep Logs Endpoint ----------
+@app.route("/compare-sleep-logs", methods=["POST"])
+def compare_sleep_logs():
+    """
+    Request body (example):
+    {
+      "current_log": {
+        "sleep_score": 78,
+        "duration_minutes": 430,
+        "bedtime": "23:30",
+        "wake_time": "06:40",
+        "deep_sleep_minutes": 70,
+        "rem_sleep_minutes": 90,
+        "light_sleep_minutes": 270
+      },
+      "previous_log": { ... same shape ... }
+    }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        cur = data.get("current_log") or {}
+        prev = data.get("previous_log") or {}
+
+        if not isinstance(cur, dict) or not isinstance(prev, dict):
+            return jsonify({"error": "Invalid payload"}), 400
+
+        today_val = _pick_metric(cur)
+        yest_val  = _pick_metric(prev)
+        delta = round(today_val - yest_val, 1)
+
+        return jsonify({
+            "today": today_val,
+            "yesterday": yest_val,
+            "delta": delta,
+            "better": f"{today_val:.1f}" if delta >= 0 else f"{yest_val:.1f}",
+            "worse":  f"{yest_val:.1f}" if delta >= 0 else f"{today_val:.1f}",
+        }), 200
+
+    except Exception as e:
+        logger.error(f"/compare-sleep-logs failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/health", methods=["GET"])
 def health_check():
     """Enhanced health check endpoint."""
@@ -399,7 +521,8 @@ def health_check():
             "/generate (POST)",
             "/generate-stories (POST)",
             "/generate-story-and-image (POST)",
-            "/sleep-analysis (POST)"
+            "/sleep-analysis (POST)",
+            "/compare-sleep-logs (POST)"
         ],
         "input_formats": {
             "sleep-analysis": [
@@ -417,4 +540,3 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-

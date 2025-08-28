@@ -227,6 +227,7 @@ def root():
             "/compare-sleep-logs",
             "/ai-highlights",
             "/readiness",
+            "/lifestyle-correlations",
             "/health"
         ]
     }), 200
@@ -807,6 +808,153 @@ def readiness():
         logger.error("/readiness failed", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+# ---------- Lifestyle Correlations ----------
+
+def _series_from_logs(logs, key_aliases):
+    """Return numeric series from logs by trying aliases (snake/camel)."""
+    series = []
+    for log in logs:
+        if not isinstance(log, dict):
+            continue
+        val = None
+        for k in key_aliases:
+            if isinstance(k, (list, tuple)):
+                # nested path
+                cur = log
+                ok = True
+                for seg in k:
+                    if isinstance(cur, dict) and seg in cur:
+                        cur = cur[seg]
+                    else:
+                        ok = False
+                        break
+                if ok:
+                    val = cur
+                    break
+            else:
+                if k in log:
+                    val = log.get(k)
+                    break
+        n = _num_or_0(val)
+        # accept zero as value; skip only None/non-numeric that became 0 while genuinely missing?
+        # We'll include zeros, but require variance later.
+        series.append(n)
+    return series
+
+def _pearson_corr(x, y):
+    """Compute Pearson r with basic safeguards. Returns (r, n)."""
+    if not x or not y or len(x) != len(y):
+        return 0.0, 0
+    n = len(x)
+    # Remove pairs where both are exactly 0 AND likely missing everywhere
+    # But better: keep all, variance check will handle flat lines.
+    mean_x = sum(x) / n
+    mean_y = sum(y) / n
+    vx = sum((xi - mean_x) ** 2 for xi in x)
+    vy = sum((yi - mean_y) ** 2 for yi in y)
+    if vx == 0 or vy == 0:
+        return 0.0, n
+    cov = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
+    r = cov / (vx ** 0.5) / (vy ** 0.5)
+    # clamp to [-1, 1] for numerical safety
+    if r != r:  # NaN
+        r = 0.0
+    r = max(-1.0, min(1.0, r))
+    return r, n
+
+@app.route("/lifestyle-correlations", methods=["POST"])
+def lifestyle_correlations():
+    """
+    Body: { "logs": [ {...}, {...}, ... ] }  // order doesn't matter
+    Returns:
+    {
+      "n": <num_samples>,
+      "method": "pearson",
+      "correlations": {
+        "caffeine_intake": {"sleep_score":  ..., "duration_minutes": ..., "deep_sleep_minutes": ..., "rem_sleep_minutes": ..., "efficiency": ...},
+        "exercise_minutes": {...},
+        "screen_time_before_bed": {...},
+        "water_intake": {...},
+        "stress_level": {...},
+        "medications": {...}   // if numeric present
+      },
+      "top_positive": [ {"pair":"exercise_minutes vs sleep_score","r":0.42}, ...],
+      "top_negative": [ {"pair":"caffeine_intake vs duration_minutes","r":-0.37}, ...],
+      "caveats": [
+        "Correlations are associative, not causal.",
+        "Require at least ~7–10 nights for stable signals.",
+        "Flat/constant series are reported as 0."
+      ]
+    }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        logs = data.get("logs") or []
+        if not isinstance(logs, list) or len(logs) < 2:
+            return jsonify({"error": "Provide logs as an array with at least 2 entries"}), 400
+
+        # Define lifestyle inputs and sleep outcomes (aliases included)
+        lifestyle_keys = {
+            "caffeine_intake": ["caffeine_intake", "caffeineIntake"],
+            "exercise_minutes": ["exercise_minutes", "exerciseMinutes"],
+            "screen_time_before_bed": ["screen_time_before_bed", "screenTimeBeforeBed", "screen_time"],
+            "water_intake": ["water_intake", "waterIntake"],
+            "stress_level": ["stress_level", "stressLevel"],
+            "medications": ["medications", "meds_count", "meds"]  # if numeric count present
+        }
+        outcome_keys = {
+            "sleep_score": ["sleep_score", "sleepScore", "score", ["metrics","sleepScore"]],
+            "duration_minutes": ["duration_minutes", "durationMinutes", "totalSleepMinutes", "duration"],
+            "deep_sleep_minutes": ["deep_sleep_minutes", "deepSleepMinutes", ["stages","deepMinutes"]],
+            "rem_sleep_minutes": ["rem_sleep_minutes", "remSleepMinutes", ["stages","remMinutes"]],
+            "light_sleep_minutes": ["light_sleep_minutes", "lightSleepMinutes", ["stages","lightMinutes"]],
+            "efficiency": ["sleep_efficiency", "efficiency", "efficiencyScore", "sleepEfficiency"]
+        }
+
+        # Pre-extract series for all keys
+        series_lifestyle = {lk: _series_from_logs(logs, aliases) for lk, aliases in lifestyle_keys.items()}
+        series_outcomes  = {ok: _series_from_logs(logs, aliases) for ok, aliases in outcome_keys.items()}
+
+        # Compute correlations
+        correlations = {}
+        pairs = []
+        for lk, x in series_lifestyle.items():
+            correlations[lk] = {}
+            for ok, y in series_outcomes.items():
+                # Align lengths (they should match; _series_from_logs always creates same len)
+                r, n = _pearson_corr(x, y)
+                # If the lifestyle column is clearly non-numeric (all zeros with no variance and no non-zero),
+                # the correlation isn't meaningful; keep r=0 but note n.
+                correlations[lk][ok] = round(r, 3)
+                if abs(r) > 0:  # collect for ranking (ignore exact zeros)
+                    pairs.append((lk, ok, r))
+
+        # Rank top positive/negative (take top 5 each)
+        positives = sorted([p for p in pairs if p[2] > 0], key=lambda p: p[2], reverse=True)[:5]
+        negatives = sorted([p for p in pairs if p[2] < 0], key=lambda p: p[2])[:5]
+
+        top_positive = [{"pair": f"{lk} vs {ok}", "r": round(r, 3)} for (lk, ok, r) in positives]
+        top_negative = [{"pair": f"{lk} vs {ok}", "r": round(r, 3)} for (lk, ok, r) in negatives]
+
+        response = {
+            "n": len(logs),
+            "method": "pearson",
+            "correlations": correlations,
+            "top_positive": top_positive,
+            "top_negative": top_negative,
+            "caveats": [
+                "Correlations are associative, not causal.",
+                "At least 7–10 nights usually needed for stable signals.",
+                "Flat/constant series (no variance) produce r=0."
+            ]
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error("/lifestyle-correlations failed", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 # ---------- Health ----------
 
 @app.route("/health", methods=["GET"])
@@ -826,7 +974,8 @@ def health_check():
             "/sleep-analysis (POST)",
             "/compare-sleep-logs (POST)",
             "/ai-highlights (POST)",
-            "/readiness (POST)"
+            "/readiness (POST)",
+            "/lifestyle-correlations (POST)"
         ]
     }
     return jsonify(status)
@@ -838,3 +987,4 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+

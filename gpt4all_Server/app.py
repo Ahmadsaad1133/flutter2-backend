@@ -47,7 +47,7 @@ def call_groq(user_prompt):
             {"role": "user", "content": user_prompt}
         ]
         payload = {
-            "model": "deepseek-r1-distill-llama-70b",
+            "model": "mistral-saba-24b",
             "messages": messages,
             "temperature": 0.6,
             "max_tokens": 1200
@@ -828,6 +828,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

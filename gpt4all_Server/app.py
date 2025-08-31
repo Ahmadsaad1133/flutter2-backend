@@ -17,11 +17,12 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("silent-veil")
 
 # ---------------- Config / Keys ----------------
 groq_api_key = os.getenv("GROQ_API_KEY")
 pixabay_api_key = os.getenv("PIXABAY_API_KEY")
+default_timeout = int(os.getenv("HTTP_TIMEOUT_SECONDS", "30"))
 
 # API endpoints
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -36,34 +37,79 @@ def extract_text(value):
         for key in ['text', 'content', 'en', 'value']:
             if key in value and isinstance(value[key], str):
                 return value[key]
-        return json.dumps(value)
+        return json.dumps(value, ensure_ascii=False)
     return str(value) if value is not None else ''
 
-def call_groq(user_prompt):
+_MD_CODE_FENCE = re.compile(r"```(?:[\w-]+)?\n([\s\S]*?)```", re.MULTILINE)
+_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+_MD_LIST_BULLET = re.compile(r"^\s{0,3}[*\-•]\s*", re.MULTILINE)
+_MD_QUOTE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
+
+def sanitize_plain_text(text: str) -> str:
+    """Turn any markdown-ish content into simple plain text."""
+    if not text:
+        return ""
+    t = text
+    # Replace code fences with inner content
+    t = _MD_CODE_FENCE.sub(lambda m: m.group(1), t)
+    # Drop headings markup
+    t = _MD_HEADING.sub("", t)
+    # Normalize bullets to "- "
+    t = _MD_LIST_BULLET.sub("- ", t)
+    # Remove block quotes
+    t = _MD_QUOTE.sub("", t)
+    # Trim excessive blank lines
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+def call_groq(user_prompt, *, json_mode=False, temperature=0.6, max_tokens=1200, system_msg="You are Silent Veil, a calm sleep coach assistant."):
+    """Call Groq. If json_mode=True, strongly enforce JSON-only outputs and attempt JSON extraction."""
+    if not groq_api_key:
+        return None, "No GROQ_API_KEY"
     try:
         messages = [
-            {"role": "system", "content": "You are Silent Veil, a calm sleep coach assistant."},
-            {"role": "user", "content": user_prompt}
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_prompt if not json_mode else (
+                user_prompt.rstrip() +
+                "\n\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
+            )}
         ]
         payload = {
             "model": "gemma2-9b-it",
             "messages": messages,
-            "temperature": 0.6,
-            "max_tokens": 1200
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
         }
+        # Attempt OpenAI-compatible JSON mode if supported by backend (ignored by some models)
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
         res = requests.post(
             GROQ_API_URL,
             headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
             json=payload,
-            timeout=30
+            timeout=default_timeout,
         )
         if res.status_code != 200:
-            return None, f"Groq API error: {res.status_code} - {res.text[:200]}"
+            return None, f"Groq API error: {res.status_code} - {res.text[:300]}"
         data = res.json()
-        content = data.get("choices", [])[0].get("message", {}).get("content")
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
         if not content:
             return None, "Empty response from Groq"
-        return content.strip(), None
+
+        # If JSON mode, try to parse, else sanitize to plain text
+        if json_mode:
+            parsed = extract_json_block(content)
+            if parsed is None:
+                # model ignored JSON instruction — try to coerce by trimming and re-parsing
+                try:
+                    parsed = json.loads(content)
+                except Exception:
+                    return None, "Groq did not return JSON"
+            return parsed, None
+        else:
+            return sanitize_plain_text(content.strip()), None
+
     except Exception as e:
         return None, f"Groq call failed: {str(e)}"
 
@@ -73,16 +119,19 @@ def clean_json_output(json_text):
         if isinstance(parsed, dict):
             content = parsed.get("content", "")
             if isinstance(content, dict):
-                parsed["content"] = json.dumps(content, indent=2)
+                parsed["content"] = json.dumps(content, indent=2, ensure_ascii=False)
         return parsed
     except Exception:
         return {"raw": json_text}
 
-def _extract_json_block(text):
+def extract_json_block(text):
+    """Extract the first top-level JSON object/array in text and parse it. Returns Python obj or None."""
     if not text:
         return None
-    brace = re.search(r"\{[\s\S]*\}", text)
-    brack = re.search(r"\[[\s\S]*\]", text)
+    # Prefer array/object; greedy but balanced patterns are tricky — try simple heuristics
+    # Try object first
+    brace = re.search(r"\{(?:[^{}]|(?:\{[^{}]*\}))*\}", text, re.DOTALL)
+    brack = re.search(r"\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\]", text, re.DOTALL)
     m = None
     if brace and brack:
         m = brace if brace.start() < brack.start() else brack
@@ -201,7 +250,6 @@ def root():
             "/readiness",
             "/lifestyle-correlations",
             "/insights",
-            "/health",
             "/report"
         ]
     }), 200
@@ -210,20 +258,20 @@ def root():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     prompt = (data.get("prompt") or "").strip()
     if not prompt:
         return jsonify(error="Missing 'prompt'"), 400
-    content, err = call_groq(prompt)
+    content, err = call_groq(prompt, json_mode=False)
     if err:
-        return jsonify(error=err), 500
+        return jsonify(error=err), 502
     return jsonify(response=content)
 
 # ---------- Generate (plain) ----------
 
 @app.route("/generate", methods=["POST"])
 def generate_story():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     mood = (data.get("mood") or "").strip()
     sleep_quality = (data.get("sleep_quality") or "").strip()
     if not mood or not sleep_quality:
@@ -233,16 +281,16 @@ def generate_story():
         f"and sleep quality '{sleep_quality}', create a calming bedtime story. "
         "Return only the story text, no JSON or formatting."
     )
-    story, err = call_groq(prompt)
+    story, err = call_groq(prompt, json_mode=False)
     if err:
-        return jsonify(error=err), 500
+        return jsonify(error=err), 502
     return jsonify(story=story)
 
 # ---------- Generate (multiple stories with images) ----------
 
 @app.route("/generate-stories", methods=["POST"])
 def generate_stories():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     mood = (data.get("mood") or "").strip()
     sleep_quality = (data.get("sleep_quality") or "").strip()
     count = int(data.get("count", 5))
@@ -258,10 +306,9 @@ def generate_stories():
             "Respond in JSON with: title, description, content. "
             "All values must be plain strings. No markdown or nested data."
         )
-        text, err = call_groq(prompt)
+        parsed, err = call_groq(prompt, json_mode=True)
         if err:
             continue
-        parsed = _extract_json_block(text) or {}
         title = extract_text((parsed or {}).get("title") or f"Oneiric Journey #{i+1}").strip()
         base = title; n = 2
         while title in seen:
@@ -279,14 +326,14 @@ def generate_stories():
             "durationMinutes": duration,
         })
     if not stories:
-        return jsonify(error="Failed to generate any stories"), 500
+        return jsonify(error="Failed to generate any stories"), 502
     return jsonify(stories=stories)
 
 # ---------- Generate (single story + image) ----------
 
 @app.route("/generate-story-and-image", methods=["POST"])
 def generate_story_and_image():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     mood = (data.get("mood") or "").strip()
     sleep_quality = (data.get("sleep_quality") or "").strip()
     if not mood or not sleep_quality:
@@ -296,10 +343,9 @@ def generate_story_and_image():
         "create a calming bedtime story. Respond in JSON with: title, description, content. "
         "All values must be plain strings. No markdown or nested data."
     )
-    text, err = call_groq(prompt)
+    parsed, err = call_groq(prompt, json_mode=True)
     if err:
-        return jsonify(error=err), 500
-    parsed = _extract_json_block(text) or {}
+        return jsonify(error=err), 502
     title = extract_text(parsed.get("title") or "Oneiric Dream").strip()
     description = extract_text(parsed.get("description") or "").strip()
     content = extract_text(parsed.get("content") or "").strip()
@@ -317,7 +363,7 @@ def generate_story_and_image():
 
 @app.route("/sleep-analysis", methods=["POST"])
 def sleep_analysis():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     logger.info(f"Received sleep analysis request: {str(data)[:500]}")
 
     sleep_data = data.get("sleep_data")
@@ -356,10 +402,10 @@ def sleep_analysis():
                 "4. Identify potential sleep disorders\n"
                 "5. Provide evidence-based recommendations\n\n"
                 "Sections:\n"
-                "### Quantitative Analysis\n"
-                "### Clinical Assessment\n"
-                "### Treatment Recommendations\n\n"
-                f"Data: {json.dumps(sleep_data)}"
+                "Quantitative Analysis\n"
+                "Clinical Assessment\n"
+                "Treatment Recommendations\n\n"
+                f"Data: {json.dumps(sleep_data, ensure_ascii=False)}"
             )
         else:
             symptoms = sleep_data.get("symptoms", [])
@@ -374,15 +420,15 @@ def sleep_analysis():
                 "2. Relate symptoms to physiological causes\n"
                 "3. Provide clinical recommendations\n\n"
                 "Sections:\n"
-                "### Symptom Analysis\n"
-                "### Clinical Assessment\n"
-                "### Personalized Recommendations\n\n"
+                "Symptom Analysis\n"
+                "Clinical Assessment\n"
+                "Personalized Recommendations\n\n"
                 f"Symptoms: {', '.join(symptoms)}"
             )
 
-        text, err = call_groq(prompt)
+        text, err = call_groq(prompt, json_mode=False)
         if err or not text:
-            return jsonify(error="Analysis service error", details=err or "empty"), 500
+            return jsonify(error="Analysis service error", details=err or "empty"), 502
         return jsonify(analysis=text)
     except Exception as e:
         logger.error("Sleep analysis failed", exc_info=True)
@@ -487,7 +533,6 @@ def _summarize_logs_for_highlights(logs):
             m1 = {"sleep_score":"sleep_score","duration_minutes":"duration_minutes","deep":"deep_sleep_minutes",
                   "rem":"rem_sleep_minutes","light":"light_sleep_minutes","quality":"quality",
                   "stress":"stress_level","caffeine":"caffeine_intake","exercise":"exercise_minutes","screen":"screen_time_before_bed"}
-        # camelCase too
             m2 = {"sleep_score":"sleepScore","duration_minutes":"durationMinutes","deep":"deepSleepMinutes",
                   "rem":"remSleepMinutes","light":"lightSleepMinutes","quality":"sleepQuality",
                   "stress":"stressLevel","caffeine":"caffeineIntake","exercise":"exerciseMinutes","screen":"screenTimeBeforeBed"}
@@ -508,10 +553,9 @@ def ai_highlights():
             "produce 4–6 concise highlights strictly in JSON array format. Each item must be an object with keys:\n"
             "title (<= 40 chars), value (short stat string), change (one of: up, down, flat), insight (<= 140 chars).\n\n"
             "No markdown, no extra text.\n\n"
-            f"SUMMARY_JSON = {json.dumps(summary)}"
+            f"SUMMARY_JSON = {json.dumps(summary, ensure_ascii=False)}"
         )
-        text, err = call_groq(prompt) if groq_api_key else (None, "No GROQ_API_KEY")
-        parsed = _extract_json_block(text or "") if not err else None
+        parsed, err = call_groq(prompt, json_mode=True) if groq_api_key else (None, "No GROQ_API_KEY")
         highlights = []
         if isinstance(parsed, list):
             for item in parsed[:6]:
@@ -878,10 +922,9 @@ def report():
             "produce 4–6 concise highlights strictly in JSON array format. Each item must be an object with keys:\n"
             "title (<= 40 chars), value (short stat string), change (one of: up, down, flat), insight (<= 140 chars).\n\n"
             "No markdown, no extra text.\n\n"
-            f"SUMMARY_JSON = {json.dumps(summary)}"
+            f"SUMMARY_JSON = {json.dumps(summary, ensure_ascii=False)}"
         )
-        text_h, err_h = call_groq(prompt_h) if groq_api_key else (None, "No GROQ_API_KEY")
-        parsed_h = _extract_json_block(text_h or "") if not err_h else None
+        parsed_h, err_h = call_groq(prompt_h, json_mode=True) if groq_api_key else (None, "No GROQ_API_KEY")
         highlights = []
         if isinstance(parsed_h, list):
             for item in parsed_h[:6]:
@@ -922,10 +965,10 @@ def report():
                         "4. Identify potential sleep disorders\n"
                         "5. Provide evidence-based recommendations\n\n"
                         "Sections:\n"
-                        "### Quantitative Analysis\n"
-                        "### Clinical Assessment\n"
-                        "### Treatment Recommendations\n\n"
-                        f"Data: {json.dumps(current_obj)}"
+                        "Quantitative Analysis\n"
+                        "Clinical Assessment\n"
+                        "Treatment Recommendations\n\n"
+                        f"Data: {json.dumps(current_obj, ensure_ascii=False)}"
                     )
                 else:
                     symptoms = current_obj.get("symptoms", [])
@@ -940,12 +983,12 @@ def report():
                         "2. Relate symptoms to physiological causes\n"
                         "3. Provide clinical recommendations\n\n"
                         "Sections:\n"
-                        "### Symptom Analysis\n"
-                        "### Clinical Assessment\n"
-                        "### Personalized Recommendations\n\n"
+                        "Symptom Analysis\n"
+                        "Clinical Assessment\n"
+                        "Personalized Recommendations\n\n"
                         f"Symptoms: {', '.join(symptoms)}"
                     )
-                txt, er = call_groq(prompt)
+                txt, er = call_groq(prompt, json_mode=False)
                 return txt or ""
             except Exception:
                 return ""
@@ -1008,12 +1051,12 @@ def report():
             b = ' — '.join([t for t in [title, value] if t])
             bullets.append(f"{b}. {insight}" if b else insight)
         if not bullets and analysisText:
-            lines = [l for l in analysisText.splitlines() if l.strip()]
+            lines = [l for l in sanitize_plain_text(analysisText).splitlines() if l.strip()]
             bullets.extend(lines[:3])
         executiveSummary = {
             "title": "Executive Summary",
             "bullets": bullets,
-            "rawAnalysisPreview": (analysisText[:600] + "…") if analysisText and len(analysisText) > 600 else (analysisText or ""),
+            "rawAnalysisPreview": (sanitize_plain_text(analysisText)[:600] + "…") if analysisText and len(analysisText) > 600 else (sanitize_plain_text(analysisText) or ""),
         }
 
         level = "Low Risk" if score >= 75 else ("Moderate Risk" if score >= 55 else "High Risk")
@@ -1116,9 +1159,6 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
-
-
 
 
 

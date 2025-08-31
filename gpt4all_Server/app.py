@@ -233,6 +233,109 @@ def _parse_duration_flexible(raw):
     except Exception:
         return 0
 
+# ---------- Legacy shim for old UIs ----------
+def _legacy_report_shim(resp):
+    """
+    Produce old/snake_case + alternative shapes so any UI will render something.
+    """
+    legacy = {}
+
+    # ---------- Executive Summary ----------
+    es = resp.get("executiveSummary") or {}
+    es_bullets = es.get("bullets") or []
+    es_text = es.get("rawAnalysisPreview") or ""
+    if not es_text and es_bullets:
+        es_text = "\n".join([str(b) for b in es_bullets if str(b).strip()])
+    # Object form (old code expected .bullets + .text)
+    legacy["executive_summary"] = {
+        "bullets": es_bullets,
+        "text": es_text
+    }
+    # Also provide direct string for super-legacy readers
+    legacy["summary"] = es_text
+
+    # ---------- Risk Assessment ----------
+    ra = resp.get("riskAssessment") or {}
+    comps = ra.get("components") or {}
+    # Build simple hotspots = worst 4 components (<50)
+    hotspots = []
+    try:
+        worst = sorted(
+            [(k, float(v)) for k, v in comps.items() if isinstance(v, (int, float))],
+            key=lambda kv: kv[1]
+        )
+        hotspots = [k.replace("_", " ").title() for k, v in worst if v < 50][:4]
+    except Exception:
+        pass
+
+    legacy["risk_assessment"] = {
+        "score": ra.get("score"),
+        "level": ra.get("level"),
+        "advice": ra.get("advice"),
+        "components": comps,
+        "hotspots": hotspots
+    }
+
+    # ---------- Energy Plan ----------
+    ep = resp.get("energyPlan") or {}
+    morning = ep.get("morning") or []
+    afternoon = ep.get("afternoon") or []
+    evening = ep.get("evening") or []
+    flat_plan = []
+    # Flatten into plan items with time_range/action/rationale for old UI
+    for label, items in (("morning", morning), ("afternoon", afternoon), ("evening", evening)):
+        for a in items:
+            flat_plan.append({
+                "time_range": label,           # old key
+                "timeRange": label,            # camel alias
+                "action": str(a),
+                "rationale": ""
+            })
+    # Pick a single tip-ish line for old "advice" field
+    energy_tip = ""
+    for bucket in (evening, afternoon, morning):
+        if bucket:
+            energy_tip = str(bucket[0])
+            break
+
+    legacy["energy_plan"] = {
+        "advice": energy_tip,
+        "plan": flat_plan
+    }
+
+    # ---------- Wake Windows ----------
+    ww = resp.get("wakeWindows") or {}
+    windows = ww.get("windows") or []
+    # Old UI sometimes expects top-level array
+    legacy["wake_windows"] = windows
+
+    # ---------- What-If Scenarios ----------
+    wis = resp.get("whatIfScenarios") or {}
+    scenarios = wis.get("scenarios") or []
+    legacy["what_if_scenarios"] = scenarios
+
+    # ---------- Lifestyle Correlations ----------
+    # Provide BOTH a map and a list flavor
+    lc_list = resp.get("lifestyleCorrelations") or []
+    lc_map = {}
+    for item in lc_list:
+        if isinstance(item, dict) and (item.get("label") is not None):
+            try:
+                lc_map[str(item.get("label"))] = float(item.get("value") or 0)
+            except Exception:
+                lc_map[str(item.get("label"))] = 0.0
+    legacy["lifestyle_correlations"] = lc_map
+    legacy["lifestyleCorrelations"] = lc_list  # keep the new list form as well
+
+    # ---------- Duplicate camelCase containers some old builds look for ----------
+    legacy["executiveSummary"] = legacy["executive_summary"]
+    legacy["riskAssessment"] = legacy["risk_assessment"]
+    legacy["energyPlan"] = legacy["energy_plan"]
+    legacy["wakeWindows"] = {"windows": legacy["wake_windows"]}
+    legacy["whatIfScenarios"] = {"scenarios": legacy["what_if_scenarios"]}
+
+    return legacy
+
 # ===================== Routes =====================
 
 @app.route("/", methods=["GET"])
@@ -1114,13 +1217,19 @@ def report():
             ])
         whatIfScenarios = {"title":"What-If Scenarios","scenarios": whatIf}
 
-        return jsonify({
+        # ------ Build final response and add legacy shim ------
+        resp = {
             "executiveSummary": executiveSummary,
             "riskAssessment": riskAssessment,
             "energyPlan": energyPlan,
             "wakeWindows": wakeWindows,
-            "whatIfScenarios": whatIfScenarios
-        }), 200
+            "whatIfScenarios": whatIfScenarios,
+            "lifestyleCorrelations": lifestyleCorrelations
+        }
+
+        resp.update(_legacy_report_shim(resp))
+
+        return jsonify(resp), 200
 
     except Exception as e:
         logger.error("/report failed", exc_info=True)

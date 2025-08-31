@@ -2,7 +2,6 @@ import json
 import os
 import logging
 import random
-import traceback
 import re
 from datetime import datetime, timedelta
 
@@ -202,7 +201,8 @@ def root():
             "/readiness",
             "/lifestyle-correlations",
             "/insights",
-            "/health"
+            "/health",
+            "/report"
         ]
     }), 200
 
@@ -690,7 +690,7 @@ def lifestyle_correlations():
         logger.error("/lifestyle-correlations failed", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
-# ---------- Insights (NEW: used by your ApiService) ----------
+# ---------- Insights (used by client and /report) ----------
 
 def _labels_from_key(k):
     pretty = {
@@ -716,7 +716,7 @@ def insights():
       - { ...single sleep log fields... }
       - { "current": {...}, "logs": [ {...}, {...}, ... ] }
       - { "sleep_data": {...}, "logs": [...] }
-    Returns a JSON object that *includes* 'lifestyleCorrelations' so your UI can render it.
+    Returns a JSON object that includes 'lifestyleCorrelations'.
     """
     try:
         payload = request.get_json(silent=True) or {}
@@ -728,7 +728,6 @@ def insights():
 
         # If we have history, compute real correlations against sleep outcomes
         if isinstance(logs, list) and len(logs) >= 2:
-            # reuse the same machinery as /lifestyle-correlations
             lifestyle_keys = {
                 "caffeine_intake": ["caffeine_intake", "caffeineIntake"],
                 "exercise_minutes": ["exercise_minutes", "exerciseMinutes"],
@@ -782,19 +781,307 @@ def insights():
                 {"label":"Stress","value": -norm(stress*10, 100)},
             ]
 
-        # Provide additional optional fields your UI may show (safe defaults)
         response = {
             "summary": "",
             "environment_analysis": {"noise":50,"light":50,"temperature":50,"comfort":50,"overall":50,"notes":""},
             "dream_mood_forecast": {"mood":"neutral","confidence":60},
             "historical_analysis": "",
-            # The key your widget reads:
             "lifestyleCorrelations": lifestyleCorrelations
         }
         return jsonify(response), 200
     except Exception as e:
         logger.error("/insights failed", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+# ---------- Unified Report (NEW) ----------
+
+def _add_minutes_hhmm(hhmm, minutes):
+    try:
+        parts = hhmm.split(':')
+        h = int(parts[0]); m = int(parts[1])
+        total = h*60 + m + int(minutes)
+        total %= (24*60)
+        nh = str(total // 60).zfill(2)
+        nm = str(total % 60).zfill(2)
+        return f"{nh}:{nm}"
+    except Exception:
+        return hhmm
+
+@app.route("/report", methods=["POST"])
+def report():
+    """
+    Build the five Report sections on the server and return one JSON object:
+      - executiveSummary, riskAssessment, energyPlan, wakeWindows, whatIfScenarios
+    Accepts:
+      { "current": {...}, "history": [ {...}, ... ] }
+      or compatible variants: {"current_log":...,"logs":[...]}, {"sleep_data":...}
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        current = payload.get("current") or payload.get("current_log") or payload.get("sleep_data") or {}
+        history = payload.get("history") or payload.get("logs") or payload.get("recent_logs") or []
+
+        # 1) Lifestyle correlations (reuse insights logic)
+        lifestyleCorrelations = []
+        if isinstance(history, list) and len(history) >= 2:
+            lifestyle_keys = {
+                "caffeine_intake": ["caffeine_intake", "caffeineIntake"],
+                "exercise_minutes": ["exercise_minutes", "exerciseMinutes"],
+                "screen_time_before_bed": ["screen_time_before_bed", "screenTimeBeforeBed", "screen_time"],
+                "water_intake": ["water_intake", "waterIntake"],
+                "stress_level": ["stress_level", "stressLevel"],
+                "medications": ["medications", "meds_count", "meds"]
+            }
+            outcome_keys = {
+                "sleep_score": ["sleep_score", "sleepScore", "score", ["metrics","sleepScore"]],
+                "duration_minutes": ["duration_minutes", "durationMinutes", "totalSleepMinutes", "duration"],
+                "deep_sleep_minutes": ["deep_sleep_minutes", "deepSleepMinutes", ["stages","deepMinutes"]],
+                "rem_sleep_minutes": ["rem_sleep_minutes", "remSleepMinutes", ["stages","remMinutes"]],
+                "light_sleep_minutes": ["light_sleep_minutes", "lightSleepMinutes", ["stages","lightMinutes"]],
+                "efficiency": ["sleep_efficiency", "efficiency", "efficiencyScore", "sleepEfficiency"]
+            }
+            series_l = {k: _series_from_logs(history, v) for k, v in lifestyle_keys.items()}
+            series_o = {k: _series_from_logs(history, v) for k, v in outcome_keys.items()}
+            outcome_order = ["sleep_score", "duration_minutes", "efficiency"]
+            chosen_outcome = None
+            for o in outcome_order:
+                if any(val != 0 for val in series_o[o]):
+                    chosen_outcome = o; break
+            chosen_outcome = chosen_outcome or "sleep_score"
+            scored = []
+            for lk, x in series_l.items():
+                r, _ = _pearson_corr(x, series_o[chosen_outcome])
+                label = _labels_from_key(lk)
+                scored.append({"label":label, "value": round(r,3)})
+            scored.sort(key=lambda d: abs(d["value"]), reverse=True)
+            lifestyleCorrelations = scored[:6]
+        else:
+            caff = _num_or_0(current.get("caffeine_intake") or current.get("caffeineIntake"))
+            exer = _num_or_0(current.get("exercise_minutes") or current.get("exerciseMinutes"))
+            scrn = _num_or_0(current.get("screen_time_before_bed") or current.get("screenTimeBeforeBed"))
+            water= _num_or_0(current.get("water_intake") or current.get("waterIntake"))
+            stress=_num_or_0(current.get("stress_level") or current.get("stressLevel"))
+            def norm(x, hi): 
+                return round(_clamp((x/hi)*0.4, 0, 0.4), 3)
+            lifestyleCorrelations = [
+                {"label":"Caffeine","value": -norm(caff, 300)},
+                {"label":"Exercise","value":  norm(exer, 60)},
+                {"label":"Screen Time","value": -norm(scrn, 120)},
+                {"label":"Water Intake","value":  norm(water, 2500)},
+                {"label":"Stress","value": -norm(stress*10, 100)},
+            ]
+
+        # 2) Highlights (try GROQ, fallback rules)
+        summary = _summarize_logs_for_highlights(history if isinstance(history, list) else [])
+        prompt_h = (
+            "You are Silent Veil, an expert sleep coach. Given the following numeric summary of a user's recent sleep logs, "
+            "produce 4–6 concise highlights strictly in JSON array format. Each item must be an object with keys:\n"
+            "title (<= 40 chars), value (short stat string), change (one of: up, down, flat), insight (<= 140 chars).\n\n"
+            "No markdown, no extra text.\n\n"
+            f"SUMMARY_JSON = {json.dumps(summary)}"
+        )
+        text_h, err_h = call_groq(prompt_h) if groq_api_key else (None, "No GROQ_API_KEY")
+        parsed_h = _extract_json_block(text_h or "") if not err_h else None
+        highlights = []
+        if isinstance(parsed_h, list):
+            for item in parsed_h[:6]:
+                if not isinstance(item, dict): continue
+                title = extract_text(item.get("title","")).strip()[:60]
+                value = extract_text(item.get("value","")).strip()[:40]
+                change = extract_text(item.get("change","flat")).lower()
+                if change not in ("up","down","flat"): change = "flat"
+                insight = extract_text(item.get("insight","")).strip()[:160]
+                if title:
+                    highlights.append({"title":title,"value":value,"change":change,"insight":insight})
+        if not highlights:
+            lat = summary.get("latest", {}); dlt = summary.get("delta_vs_prev", {})
+            def chg(k): 
+                v = dlt.get(k,0.0); return "up" if v > 0.5 else ("down" if v < -0.5 else "flat")
+            highlights = [
+                {"title":"Sleep Duration","value":f"{int(lat.get('duration_minutes',0))} min","change":chg('duration_minutes'),
+                 "insight":"Aim for 420–480 mins most nights for optimal recovery."},
+                {"title":"Sleep Score","value":f"{int(lat.get('sleep_score',0))}/100","change":chg('sleep_score'),
+                 "insight":"Consistent schedule & wind-down can lift your score."},
+                {"title":"Deep + REM","value":f"{int(lat.get('deep',0)+lat.get('rem',0))} min","change":"flat",
+                 "insight":"Protect last cycle by reducing late screens & bright light."},
+                {"title":"Caffeine & Stress","value":f"{int(lat.get('caffeine',0))}mg / {int(lat.get('stress',0))}/10","change":"flat",
+                 "insight":"Cut caffeine after 14:00 and try 5-min breathing pre-bed."},
+            ]
+
+        # 3) Sleep analysis text (local build like /sleep-analysis)
+        def _build_sleep_analysis_text(current_obj):
+            try:
+                quantitative_keys = ['TST', 'TIB', 'SE', 'SOL', 'WASO', 'AHI', 'sleep_efficiency']
+                is_quant = any(k in current_obj for k in quantitative_keys)
+                if is_quant:
+                    prompt = (
+                        "You are Dr. Somnus, a board-certified sleep specialist. Analyze this quantitative sleep data:\n\n"
+                        "1. Calculate sleep efficiency: (TST / TIB) × 100 (if not provided)\n"
+                        "2. Assess sleep continuity metrics\n"
+                        "3. Compare against AASM clinical thresholds\n"
+                        "4. Identify potential sleep disorders\n"
+                        "5. Provide evidence-based recommendations\n\n"
+                        "Sections:\n"
+                        "### Quantitative Analysis\n"
+                        "### Clinical Assessment\n"
+                        "### Treatment Recommendations\n\n"
+                        f"Data: {json.dumps(current_obj)}"
+                    )
+                else:
+                    symptoms = current_obj.get("symptoms", [])
+                    if not symptoms:
+                        symptoms = [str(v) for v in current_obj.values() if isinstance(v, (str, int, float))]
+                    if not symptoms:
+                        return ""
+                    prompt = (
+                        "You are Dr. Somnus, a board-certified sleep specialist. "
+                        "Analyze these patient-reported symptoms:\n\n"
+                        "1. Identify potential sleep disorders (ICSD-3)\n"
+                        "2. Relate symptoms to physiological causes\n"
+                        "3. Provide clinical recommendations\n\n"
+                        "Sections:\n"
+                        "### Symptom Analysis\n"
+                        "### Clinical Assessment\n"
+                        "### Personalized Recommendations\n\n"
+                        f"Symptoms: {', '.join(symptoms)}"
+                    )
+                txt, er = call_groq(prompt)
+                return txt or ""
+            except Exception:
+                return ""
+        analysisText = _build_sleep_analysis_text(current)
+
+        # 4) Readiness (same logic as /readiness)
+        log = current if isinstance(current, dict) else {}
+        duration = _num_or_0(log.get("duration_minutes") or log.get("durationMinutes"))
+        if duration <= 0:
+            bed_iso = log.get("bedTime") or log.get("bed_time") or log.get("sleepStart") or log.get("sleep_start")
+            wake_iso = log.get("wakeTime") or log.get("wake_time") or log.get("sleepEnd") or log.get("sleep_end")
+            if bed_iso and wake_iso:
+                duration = float(_minutes_between(str(bed_iso), str(wake_iso)))
+            else:
+                bed = log.get("bedtime"); wake = log.get("wake_time")
+                if isinstance(bed, str) and isinstance(wake, str) and ":" in bed and ":" in wake:
+                    b = _hm_to_minutes(bed); w = _hm_to_minutes(wake)
+                    duration = float(w - b) if w > b else float((24*60 - b) + w)
+
+        quality = _num_or_0(log.get("quality") or log.get("sleepQuality"))
+        stress   = _clamp(_num_or_0(log.get("stress_level") or log.get("stressLevel")), 0, 10)
+        caffeine = _clamp(_num_or_0(log.get("caffeine_intake") or log.get("caffeineIntake")), 0, 600)
+        exercise = _clamp(_num_or_0(log.get("exercise_minutes") or log.get("exerciseMinutes")), 0, 180)
+        latency  = _num_or_0(log.get("latency_minutes") or log.get("latencyMinutes"))
+        in_bed   = _num_or_0(log.get("time_in_bed_minutes") or log.get("timeInBedMinutes"))
+
+        eff = 0.0
+        if in_bed > 0:
+            denom = in_bed + latency if (in_bed + latency) > 0 else 0
+            eff = _clamp((duration / denom) * 100.0, 0, 100) if denom > 0 else 0.0
+
+        comp = {
+            "duration":  _clamp((duration / 480.0) * 100.0, 0, 100),
+            "quality":   _clamp((quality / 10.0) * 100.0, 0, 100),
+            "efficiency": eff,
+            "stress":    _clamp(100.0 - (stress * 10.0), 0, 100),
+            "caffeine":  _clamp(100.0 - (caffeine / 6.0), 0, 100),
+            "exercise":  _clamp(min(exercise, 60) / 60.0 * 100.0, 0, 100),
+        }
+        score = (
+            0.32 * comp["duration"] +
+            0.20 * comp["quality"] +
+            0.18 * comp["efficiency"] +
+            0.12 * comp["stress"] +
+            0.08 * comp["caffeine"] +
+            0.10 * comp["exercise"]
+        )
+        score = round(_clamp(score, 0, 100), 1)
+        advice = "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." if score >= 75 else \
+                 "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." if score >= 55 else \
+                 "Take it easy today. Short naps, hydration, and gentle movement recommended."
+        readiness_obj = {"score": score, "components": comp, "advice": advice}
+
+        # ---------- Compose sections ----------
+        bullets = []
+        for h in highlights[:4]:
+            title = (h.get('title') or '').strip()
+            value = (h.get('value') or '').strip()
+            insight = (h.get('insight') or '').strip()
+            b = ' — '.join([t for t in [title, value] if t])
+            bullets.append(f"{b}. {insight}" if b else insight)
+        if not bullets and analysisText:
+            lines = [l for l in analysisText.splitlines() if l.strip()]
+            bullets.extend(lines[:3])
+        executiveSummary = {
+            "title": "Executive Summary",
+            "bullets": bullets,
+            "rawAnalysisPreview": (analysisText[:600] + "…") if analysisText and len(analysisText) > 600 else (analysisText or ""),
+        }
+
+        level = "Low Risk" if score >= 75 else ("Moderate Risk" if score >= 55 else "High Risk")
+        riskAssessment = {
+            "title": "Risk Assessment",
+            "score": score,
+            "level": level,
+            "advice": advice,
+            "components": comp
+        }
+
+        morning = [
+            "Hydrate on wake; natural light for 10–15 min.",
+            "Gentle movement (5–10 min) to boost circadian alerting."
+        ]
+        afternoon = [
+            "Keep caffeine <200mg total after 14:00.",
+            "Short walk or light cardio (10–20 min)."
+        ]
+        evening = [
+            "Wind-down routine 45–60 min pre-bed (dim lights, low screens).",
+            "Room cool, dark, and quiet."
+        ]
+        if score < 55:
+            evening.append("Aim for an early lights-out tonight; consider 10–20 min nap before 15:00.")
+        energyPlan = {"title":"Daily Energy Plan","morning":morning,"afternoon":afternoon,"evening":evening}
+
+        windows = []
+        bed = (current.get("bedTime") or current.get("bed_time") or current.get("bedtime"))
+        wake = (current.get("wakeTime") or current.get("wake_time"))
+        if isinstance(wake, str) and ":" in wake:
+            windows.append({"start": wake, "end": _add_minutes_hhmm(wake, 30), "why": "Maintain consistency (+30m)"})
+            windows.append({"start": _add_minutes_hhmm(wake, -30), "end": wake, "why": "Keep earlier rise (-30m)"})
+        elif isinstance(bed, str) and ":" in bed:
+            target = _add_minutes_hhmm(bed, 7*60 + 30)
+            windows.append({"start": _add_minutes_hhmm(target, -15), "end": _add_minutes_hhmm(target, 15), "why": "Target wake window (~7.5h)"})
+        else:
+            windows.append({"start": "06:30", "end": "07:30", "why": "Default window for 7–8h schedule"})
+        wakeWindows = {"title":"Suggested Wake Windows","windows":windows,"note":"Aim for consistent wake time; adjust by ≤30 min when needed."}
+
+        whatIf = []
+        for item in (lifestyleCorrelations or [])[:3]:
+            label = (item.get("label") or "").strip()
+            val = str(item.get("value") or "")
+            direction = "reduce" if val.startswith('-') else "increase"
+            whatIf.append({
+                "title": f"What if I {direction} {label}?",
+                "impact": "Likely positive" if direction == "reduce" else "Potentially positive if moderate",
+                "note": f"Based on your data correlation: {label} → {val}"
+            })
+        if not whatIf:
+            whatIf.extend([
+                {"title":"What if I reduce screens 1h before bed?","impact":"Likely positive","note":"Less blue light improves melatonin onset."},
+                {"title":"What if I add a 10-min walk after lunch?","impact":"Positive for sleep drive","note":"Light activity supports sleep pressure."}
+            ])
+        whatIfScenarios = {"title":"What-If Scenarios","scenarios": whatIf}
+
+        return jsonify({
+            "executiveSummary": executiveSummary,
+            "riskAssessment": riskAssessment,
+            "energyPlan": energyPlan,
+            "wakeWindows": wakeWindows,
+            "whatIfScenarios": whatIfScenarios
+        }), 200
+
+    except Exception as e:
+        logger.error("/report failed", exc_info=True)
+        return jsonify({"error": str(e), "code": "ReportException"}), 500
 
 # ---------- Health ----------
 
@@ -816,7 +1103,8 @@ def health_check():
             "/ai-highlights (POST)",
             "/readiness (POST)",
             "/lifestyle-correlations (POST)",
-            "/insights (POST)"
+            "/insights (POST)",
+            "/report (POST)"
         ]
     }
     return jsonify(status)
@@ -828,7 +1116,6 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
 
 
 

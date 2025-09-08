@@ -68,17 +68,24 @@ def _kv_table(d: dict):
     rows = []
     for k, v in d.items():
         if _is_scalar(v):
-            rows.append(f"<tr><td class='k'>{_escape(str(k))}</td><td class='v'>{_escape('' if v is None else str(v))}</td></tr>")
+            rows.append(
+                f"<tr><td class='k'>{_escape(str(k))}</td>"
+                f"<td class='v'>{_escape('' if v is None else str(v))}</td></tr>"
+            )
         else:
             sub_html, _ = _format_value_html(v, prefer='auto', depth=1)
-            rows.append(f"<tr><td class='k'>{_escape(str(k))}</td><td class='v'>{sub_html}</td></tr>")
-    return f\"\"\"
+            rows.append(
+                f"<tr><td class='k'>{_escape(str(k))}</td>"
+                f"<td class='v'>{sub_html}</td></tr>"
+            )
+
+    return f"""
     <table class="kv">
       <tbody>
         {''.join(rows)}
       </tbody>
     </table>
-    \"\"\"
+    """
 
 def _format_value_html(val, *, prefer="auto", depth=0):
     if prefer == "p" and isinstance(val, str):

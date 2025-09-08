@@ -5,9 +5,14 @@ import random
 import re
 from datetime import datetime, timedelta
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import requests
 from flask_cors import CORS
+# --- PDF rendering deps ---
+from jinja2 import Template
+from weasyprint import HTML, CSS
+from io import BytesIO
+
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -672,7 +677,7 @@ def ai_highlights():
                     highlights.append({"title":title,"value":value,"change":change,"insight":insight})
         if not highlights:
             lat = summary.get("latest", {}); dlt = summary.get("delta_vs_prev", {})
-            def chg(k): 
+            def chg(k):
                 v = dlt.get(k,0.0); return "up" if v > 0.5 else ("down" if v < -0.5 else "flat")
             highlights = [
                 {"title":"Sleep Duration","value":f"{int(lat.get('duration_minutes',0))} min","change":chg('duration_minutes'),
@@ -753,7 +758,7 @@ def readiness():
 def _series_from_logs(logs, key_aliases):
     series = []
     for log in logs:
-        if not isinstance(log, dict): 
+        if not isinstance(log, dict):
             series.append(0.0); continue
         val = None
         for k in key_aliases:
@@ -898,7 +903,7 @@ def insights():
             outcome_order = ["sleep_score", "duration_minutes", "efficiency"]
             chosen_outcome = None
             for o in outcome_order:
-                if any(val != 0 for val in series_o[o]): 
+                if any(val != 0 for val in series_o[o]):
                     chosen_outcome = o; break
             chosen_outcome = chosen_outcome or "sleep_score"
 
@@ -918,7 +923,7 @@ def insights():
             water= _num_or_0(current.get("water_intake") or current.get("waterIntake"))
             stress=_num_or_0(current.get("stress_level") or current.get("stressLevel"))
             # simple normalized hints mapped to [-0.4, +0.4]
-            def norm(x, hi): 
+            def norm(x, hi):
                 return round(_clamp((x/hi)*0.4, 0, 0.4), 3)
             lifestyleCorrelations = [
                 {"label":"Caffeine","value": -norm(caff, 300)},     # higher caffeine → worse
@@ -1008,7 +1013,7 @@ def report():
             scrn = _num_or_0(current.get("screen_time_before_bed") or current.get("screenTimeBeforeBed"))
             water= _num_or_0(current.get("water_intake") or current.get("waterIntake"))
             stress=_num_or_0(current.get("stress_level") or current.get("stressLevel"))
-            def norm(x, hi): 
+            def norm(x, hi):
                 return round(_clamp((x/hi)*0.4, 0, 0.4), 3)
             lifestyleCorrelations = [
                 {"label":"Caffeine","value": -norm(caff, 300)},
@@ -1041,7 +1046,7 @@ def report():
                     highlights.append({"title":title,"value":value,"change":change,"insight":insight})
         if not highlights:
             lat = summary.get("latest", {}); dlt = summary.get("delta_vs_prev", {})
-            def chg(k): 
+            def chg(k):
                 v = dlt.get(k,0.0); return "up" if v > 0.5 else ("down" if v < -0.5 else "flat")
             highlights = [
                 {"title":"Sleep Duration","value":f"{int(lat.get('duration_minutes',0))} min","change":chg('duration_minutes'),
@@ -1235,6 +1240,174 @@ def report():
         logger.error("/report failed", exc_info=True)
         return jsonify({"error": str(e), "code": "ReportException"}), 500
 
+# ===================== PDF Generation (server-side) =====================
+
+HTML_TEMPLATE = Template(r"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+    @page { size: A4; margin: 20mm 16mm; }
+    body { font-family: Arial, "Noto Sans", "DejaVu Sans", sans-serif; color: #111; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    h2 { font-size: 16px; margin: 18px 0 6px; color:#111; }
+    .subtitle { color:#555; font-size: 12px; margin-bottom: 14px; }
+    .chips { display: flex; flex-wrap: wrap; margin: 8px 0 6px; }
+    .chip { font-size: 11px; padding: 6px 10px; background: #f2f3f8; border-radius: 16px; margin: 3px 6px 3px 0; }
+    .sec { page-break-inside: avoid; margin: 8px 0 10px; }
+    .box { border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; }
+    .mono { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.4; }
+    .imgwrap { border:1px solid #eee; border-radius:8px; padding:6px; margin-top:6px; text-align:center; }
+    .imgwrap img { max-width: 100%; max-height: 320px; }
+    .footer { position: running(footer); }
+    @page { @bottom-center { content: element(footer) } }
+    .footer { font-size: 10px; color:#666; }
+  </style>
+</head>
+<body>
+
+  <h1>{{ title }}</h1>
+  <div class="subtitle">{{ subtitle }} • Generated at {{ generated_at }}</div>
+
+  {% if chips %}
+  <div class="chips">
+    {% for k, v in chips.items() %}
+      <div class="chip"><strong>{{ k }}:</strong> {{ v }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% for sec in sections %}
+    <div class="sec">
+      <h2>{{ sec.title }}</h2>
+      <div class="box mono">{{ sec.body }}</div>
+      {% if sec.image %}
+      <div class="imgwrap">
+        <img src="{{ sec.image }}"/>
+      </div>
+      {% endif %}
+    </div>
+  {% endfor %}
+
+  <div class="footer">
+    Sleep Moon • AI Report • Page {{ page_number }} / {{ page_count }}
+  </div>
+</body>
+</html>
+""")
+
+def _soft_text_for_pdf(s: str) -> str:
+    if not s:
+        return ""
+    return s.replace("\t", "  ").strip()
+
+def _ensure_sections_from_analysis_for_pdf(analysis: dict) -> list:
+    """If client didn't send 'sections', build from common keys used in your tabs."""
+    sections = []
+
+    def add(title, value):
+        if value is None:
+            return
+        if isinstance(value, (dict, list)):
+            text = json.dumps(value, ensure_ascii=False, indent=2)
+        else:
+            text = _soft_text_for_pdf(value if isinstance(value, str) else str(value))
+        text = text.strip()
+        if text:
+            sections.append({"title": title, "body": text})
+
+    # Overview / Summary
+    add("Professional Summary",
+        analysis.get("detailedReport") or analysis.get("executive_summary") or analysis.get("summary") or analysis.get("overview"))
+
+    # Lists
+    for k in ["key_insights", "recommendations", "action_items", "streaks", "smart_goals"]:
+        v = analysis.get(k) or analysis.get(k.replace("_", ""))
+        if v:
+            if isinstance(v, list):
+                body = "• " + "\n• ".join([_soft_text_for_pdf(str(x)) for x in v if _soft_text_for_pdf(str(x))])
+            else:
+                body = _soft_text_for_pdf(str(v))
+            sections.append({"title": k.replace("_", " ").title(), "body": body})
+
+    # Dream / Mood
+    dm = analysis.get("dream_mood_forecast") or analysis.get("dreamMoodForecast")
+    if dm:
+        body = json.dumps(dm, ensure_ascii=False, indent=2) if isinstance(dm, (dict, list)) else _soft_text_for_pdf(str(dm))
+        sections.append({"title": "Dream & Mood Forecast", "body": body})
+
+    # Maps / complex
+    for k in [
+        "sleepMetrics", "sleepEfficiencyAnalysis", "sleepDepthAnalysis", "recoveryAnalysis",
+        "sleepPatterns", "sleepTrends", "dailyComparison",
+        "environment_analysis", "environmentAnalysis",
+        "behavioralFactors", "quality_breakdown", "qualityBreakdown",
+        "risk_assessment", "riskAssessment",
+        "daily_energy_plan", "energy_plan",
+        "hrv_summary", "respiratory_events",
+        "glucose_correlation", "nutrition_correlation",
+        "drivers", "causal_graph", "energy_timeline", "next_day_forecast",
+        "what_if", "whatIf", "what_if_scenarios", "whatIfScenarios"
+    ]:
+        v = analysis.get(k)
+        if v:
+            body = json.dumps(v, ensure_ascii=False, indent=2) if isinstance(v, (dict, list)) else _soft_text_for_pdf(str(v))
+            sections.append({"title": k.replace("_", " ").title(), "body": body})
+
+    return sections
+
+@app.post("/api/pdf/sleep-report")
+def generate_pdf():
+    """Generate the full PDF on the server from analysis JSON and optional sections/images."""
+    try:
+        data = request.get_json(force=True, silent=False) or {}
+    except Exception as e:
+        return jsonify({"error": f"Invalid JSON: {e}"}), 400
+
+    title = data.get("title") or "Sleep Analysis Report"
+    subtitle = data.get("subtitle") or "Sleep Moon • AI Insights"
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    chips = data.get("chips") or {}
+    sections = data.get("sections")
+    analysis = data.get("analysis") or {}
+
+    # Auto-build sections if not provided
+    if not sections:
+        sections = _ensure_sections_from_analysis_for_pdf(analysis)
+
+    # Normalize images: accept raw base64 as well as data URLs
+    norm_sections = []
+    for s in sections:
+        body = _soft_text_for_pdf(s.get("body", ""))
+        img = s.get("image")
+        if img and not str(img).startswith("data:"):
+            img = f"data:image/png;base64,{img}"
+        norm_sections.append({
+            "title": s.get("title", "Section"),
+            "body": body,
+            "image": img
+        })
+
+    html = HTML_TEMPLATE.render(
+        title=title,
+        subtitle=subtitle,
+        generated_at=generated_at,
+        chips=chips,
+        sections=norm_sections,
+        page_number="counter(page)",
+        page_count="counter(pages)",
+    )
+
+    pdf_io = BytesIO()
+    HTML(string=html).write_pdf(pdf_io, stylesheets=[CSS(string="")])
+    pdf_io.seek(0)
+
+    return send_file(pdf_io, mimetype="application/pdf", as_attachment=True, download_name="sleep_report.pdf")
+
 # ---------- Health ----------
 
 @app.route("/health", methods=["GET"])
@@ -1268,7 +1441,6 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
 
 
 

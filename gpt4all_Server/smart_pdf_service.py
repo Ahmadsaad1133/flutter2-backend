@@ -701,4 +701,3 @@ def doctor_demo():
     }
     with pdf_bp.test_request_context(json=demo):
         return generate_pdf()
-

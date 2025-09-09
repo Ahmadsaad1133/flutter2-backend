@@ -230,48 +230,7 @@ def _groq_doctor_struct(user_payload: dict) -> dict:
     """
     # If no key -> just map payload through minimal schema so template renders.
     if not GROQ_API_KEY:
-        return {
-            "meta": {
-                "generated_at": _now_iso(),
-                "model": GROQ_MODEL,
-                "title": user_payload.get("title") or "Sleep Doctor Report",
-                "subtitle": user_payload.get("subtitle") or "AI-assisted clinical summary",
-                "patient": user_payload.get("patient") or {},
-            },
-            "executiveSummary": {
-                "bullets": user_payload.get("insights") or [
-                    "Provide GROQ_API_KEY for AI-generated doctor report.",
-                    "You can still pass insights/recommendations/sections to render.",
-                ]
-            },
-            "risk": {
-                "score": user_payload.get("risk_score") or 65,
-                "level": user_payload.get("risk_level") or "Moderate Risk",
-                "rationale": "Auto mode without LLM; showing placeholder score.",
-                "components": user_payload.get("risk_components") or {"efficiency": 68, "duration": 72, "stress": 55}
-            },
-            "assessment": {
-                "diagnoses": user_payload.get("diagnoses") or ["Insomnia (suspected)", "Insufficient sleep syndrome (rule out)"],
-                "notes": user_payload.get("overview") or user_payload.get("analysis") or "No clinical text provided."
-            },
-            "plan": {
-                "morning": ["Natural light 10–15 min after wake", "Hydration and light mobility"],
-                "afternoon": ["Keep caffeine <200mg after 14:00", "10–20 min walk"],
-                "evening": ["Wind-down 45–60 min pre-bed", "Dim lights; reduce screens 1h pre-bed"]
-            },
-            "wakeWindows": {
-                "windows": [{"start": "06:30", "end": "07:00", "why": "Consistency target"}],
-                "note": "Adjust by ≤30 min when needed."
-            },
-            "whatIf": [
-                {"title": "Reduce screens 1h pre-bed", "impact": "Likely positive", "note": "Improves melatonin onset."}
-            ],
-            "metrics": user_payload.get("metrics") or {},
-            "charts": user_payload.get("charts") or [],
-            "images": user_payload.get("images") or [],
-            "recommendations": user_payload.get("recommendations") or [],
-            "sections": user_payload.get("sections") or []
-        }
+        raise RuntimeError("GROQ_API_KEY is not set")
 
     # With key: ask Groq to do strict JSON doctor report
     sys_prompt = (
@@ -302,9 +261,20 @@ def _groq_doctor_struct(user_payload: dict) -> dict:
         "- Use clear bullets; avoid markdown symbols. Do NOT include extra keys.\n"
     )
 
-    user_prompt = {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    body = {"model": GROQ_MODEL, "messages": [{"role": "system", "content": sys_prompt}, user_prompt], "temperature": 0.2}
+     user_prompt = {
+        "role": "user",
+        "content": json.dumps(user_payload, ensure_ascii=False),
+    }
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "system", "content": sys_prompt}, user_prompt],
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    }
 
     r = requests.post(GROQ_URL, headers=headers, json=body, timeout=60)
 
@@ -312,21 +282,17 @@ def _groq_doctor_struct(user_payload: dict) -> dict:
     data = r.json()
     content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
     # Parse JSON strictly
-    try:
-        parsed = json.loads(content)
-    except Exception:
-        # Try to extract main {...} block if model added fluff
-        m = re.search(r"({[\s\S]*})", content)
-        if not m:
-            raise ValueError("LLM returned non-JSON content")
-        parsed = json.loads(m.group(1))
+    parsed = json.loads(content)
 
     # Fill sane defaults
     parsed.setdefault("meta", {})
     parsed["meta"].setdefault("generated_at", _now_iso())
     parsed["meta"].setdefault("model", GROQ_MODEL)
     parsed.setdefault("executiveSummary", {"bullets": []})
-    parsed.setdefault("risk", {"score": 65, "level": "Moderate Risk", "rationale": "", "components": {}})
+   parsed.setdefault(
+        "risk",
+        {"score": 65, "level": "Moderate Risk", "rationale": "", "components": {}},
+    )
     parsed.setdefault("assessment", {"diagnoses": [], "notes": ""})
     parsed.setdefault("plan", {"morning": [], "afternoon": [], "evening": []})
     parsed.setdefault("wakeWindows", {"windows": [], "note": ""})

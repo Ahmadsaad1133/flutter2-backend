@@ -133,12 +133,14 @@ def call_llm(
     """
     try:
         messages = [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_prompt if not json_mode else (
-                user_prompt.rstrip() + "
-
-Return ONLY JSON. No prose, no markdown, no headings, no backticks."
-            )},
+            {  {"role": "system", "content": system_msg},
+            {
+                "role": "user",
+                "content": user_prompt if not json_mode else (
+                    user_prompt.rstrip()
+                    + "\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
+                ),
+            },
         ]
 
         payload = {
@@ -1313,6 +1315,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

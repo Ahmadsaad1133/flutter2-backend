@@ -131,24 +131,31 @@ def call_llm(
     - LLM_PROVIDER=gpt4all (default) -> http://localhost:4891/v1/chat/completions
     - LLM_PROVIDER=groq             -> https://api.groq.com/openai/v1/chat/completions
     """
-    try:␊
-        messages = [{"role": "system", "content": system_msg}]
-        if json_mode:␊
-            user_msg = (
-                user_prompt.rstrip()
-                + "\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
-            )
-        else:
-            user_msg = user_prompt
-        messages.append({"role": "user", "content": user_msg})
-        payload = {
-            "model": LLM_MODEL,
-            "messages": messages,
-            "temperature": float(temperature),
-            "max_tokens": int(max_tokens),
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
+    try:
+    messages = [{"role": "system", "content": system_msg}]
+    if json_mode:
+        user_msg = (
+            user_prompt.rstrip()
+            + "\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
+        )
+    else:
+        user_msg = user_prompt
+
+    messages.append({"role": "user", "content": user_msg})
+
+    payload = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "temperature": float(temperature),
+        "max_tokens": int(max_tokens),
+    }
+
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+except Exception as e:
+    print(f"Error while building payload: {e}")
+
 
         if LLM_PROVIDER == "groq":
             if not groq_api_key:
@@ -1313,6 +1320,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

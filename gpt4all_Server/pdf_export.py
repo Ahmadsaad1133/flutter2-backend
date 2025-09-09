@@ -1,14 +1,21 @@
+
 import os
+import re
 import json
+import base64
 from datetime import datetime
 from io import BytesIO
 from html import escape as _escape
+from typing import Any, Dict, List, Optional
 
 import requests
 from flask import Blueprint, request, jsonify, send_file
 from jinja2 import Template
 from weasyprint import HTML, CSS
 
+# -------------------------------------------------
+# Blueprint
+# -------------------------------------------------
 pdf_bp = Blueprint("pdf_bp", __name__)
 
 # ----------------------------- Config -----------------------------
@@ -17,7 +24,7 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
 GROQ_URL = os.getenv("GROQ_URL", "https://api.groq.com/openai/v1/chat/completions")
 
 # ----------------------------- Helpers ----------------------------
-def _is_scalar(x):
+def _is_scalar(x: Any) -> bool:
     return isinstance(x, (str, int, float)) or x is None
 
 def _is_shallow_dict(d: dict) -> bool:
@@ -28,372 +35,576 @@ def _is_shallow_dict(d: dict) -> bool:
             return False
     return True
 
-def _is_list_of_str(xs):
-    return isinstance(xs, list) and all(isinstance(i, str) for i in xs)
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
-def _is_list_of_shallow_dicts(xs):
-    return isinstance(xs, list) and xs and all(isinstance(i, dict) and _is_shallow_dict(i) for i in xs)
-
-def _is_list_of_dicts_with_text(xs):
-    keys = {"text", "title", "description", "note"}
-    return isinstance(xs, list) and xs and all(isinstance(i, dict) and any(k in i for k in keys) for i in xs)
-
-def _to_bullets(xs):
-    items = []
-    for it in xs:
-        if isinstance(it, dict):
-            txt = it.get("text") or it.get("description") or it.get("note") or it.get("title")
-            if txt is None:
-                txt = "; ".join(f"{k}: {v}" for k, v in it.items())
-        else:
-            txt = str(it)
-        items.append(f"<li>{_escape(str(txt))}</li>")
-    return f"<ul>{''.join(items)}</ul>"
-
-def _paragraphize(s: str):
+def _clean_json_str(s: str) -> str:
+    '''
+    Attempt to minimally fix common JSON issues:
+      - Replace single quotes with double quotes (carefully)
+      - Remove trailing commas before ] or }
+      - Strip code fences
+    '''
     if not isinstance(s, str):
-        return _escape(str(s))
-    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-    if lines and all(ln.startswith(("-", "•")) for ln in lines):
-        stripped = [ln.lstrip("-• ").strip() for ln in lines]
-        return _to_bullets(stripped)
-    ps = []
-    buf = []
-    for ln in s.splitlines():
-        if ln.strip():
-            buf.append(ln.strip())
-        elif buf:
-            ps.append(" ".join(buf)); buf = []
-    if buf:
-        ps.append(" ".join(buf))
-    if not ps:
-        ps = [s]
-    return "".join(f"<p>{_escape(p)}</p>" for p in ps)
+        return s  # type: ignore[return-value]
+    # Remove code fences if present
+    s = s.strip()
+    if s.startswith('```'):
+        s = re.sub(r'^```(?:json)?\s*|\s*```$', '', s, flags=re.IGNORECASE | re.MULTILINE)
 
-def _kv_table(d: dict):
-    rows = []
-    for k, v in d.items():
-        if _is_scalar(v):
-            rows.append(
-                f"<tr><td class='k'>{_escape(str(k))}</td>"
-                f"<td class='v'>{_escape('' if v is None else str(v))}</td></tr>"
-            )
-        else:
-            sub_html, _ = _format_value_html(v, prefer='auto', depth=1)
-            rows.append(
-                f"<tr><td class='k'>{_escape(str(k))}</td>"
-                f"<td class='v'>{sub_html}</td></tr>"
-            )
-    return f"""
-    <table class="kv">
-      <tbody>
-        {''.join(rows)}
-      </tbody>
-    </table>
-    """
+    # Extract the largest {{...}} or [...] block
+    m = re.search(r'({[\s\S]*}|\[[\s\S]*\])', s)
+    if m:
+        s = m.group(1)
 
-def _format_value_html(val, *, prefer="auto", depth=0):
-    if prefer == "p" and isinstance(val, str):
-        return _paragraphize(val), "p"
-    if prefer == "list":
-        if _is_list_of_str(val) or _is_list_of_dicts_with_text(val) or _is_list_of_shallow_dicts(val):
-            return _to_bullets(val), "list"
-        if isinstance(val, str) and ("\n" in val or val.strip().startswith(("-", "•"))):
-            return _paragraphize(val), "p"
-    if prefer == "kv" and isinstance(val, dict):
-        return _kv_table(val), "kv"
+    # Replace single quotes around keys/strings with double quotes (naive but helps)
+    # Avoid touching http:// or https://
+    def repl_quotes(match):
+        content = match.group(0)
+        if content.startswith('http://') or content.startswith('https://'):
+            return content
+        return content.replace("'", '"')
 
-    if isinstance(val, str):
-        return _paragraphize(val), "p"
-    if _is_list_of_str(val) or _is_list_of_dicts_with_text(val):
-        return _to_bullets(val), "list"
-    if _is_list_of_shallow_dicts(val):
-        bullets = []
-        for d in val:
-            row = "; ".join(f"<b>{_escape(str(k))}:</b> {_escape(str(v))}" for k, v in d.items())
-            bullets.append(f"<li>{row}</li>")
-        return f"<ul>{''.join(bullets)}</ul>", "list"
-    if isinstance(val, dict):
-        if _is_shallow_dict(val):
-            return _kv_table(val), "kv"
-        return _kv_table(val), "kv"
-    if isinstance(val, list):
-        return _to_bullets(val), "list"
+    s = re.sub(r"(?:'[^']*')", lambda m: repl_quotes(m), s)
 
+    # Remove trailing commas
+    s = re.sub(r',\s*([}\]])', r'\1', s)
+
+    # Remove comments (// ...)
+    s = re.sub(r'//.*', '', s)
+
+    return s.strip()
+
+def _extract_json(text: str) -> Optional[dict]:
     try:
-        txt = json.dumps(val, ensure_ascii=False, indent=2)
+        return json.loads(text)
     except Exception:
-        txt = str(val)
-    return f"<pre>{_escape(txt)}</pre>", "pre"
-
-def _mk_section(title: str, value=None, *, key=None, prefer=None, image=None, anchor_id=None):
-    # allow image-only sections
-    if value is None and not image:
-        return None
-    if isinstance(value, (list, dict)) and len(value) == 0 and not image:
-        return None
-    html = ""
-    kind = None
-    if value is not None:
-        html, kind = _format_value_html(value, prefer=(prefer or "auto"))
-    img_src = None
-    if image:
-        img_src = str(image)
-        if not img_src.startswith("data:"):
-            img_src = f"data:image/png;base64,{img_src}"
-    return {"title": title, "html": html, "kind": kind or "custom", "image": img_src, "key": key or "", "anchor": anchor_id or ""}
-
-def _first(*vals):
-    for v in vals:
-        if v not in (None, "", [], {}):
-            return v
-    return None
-
-def _get_any(d: dict, *names):
-    for n in names:
-        if n in d:
-            return d[n]
-    for n in names:
-        if "_" in n:
-            camel = n.split("_")[0] + "".join([w.title() for w in n.split("_")[1:]])
-            if camel in d:
-                return d[camel]
-    return None
-
-def build_sections_from_analysis(analysis: dict) -> list:
-    if not isinstance(analysis, dict):
-        return []
-    S = []
-    S.append(_mk_section("Executive Summary", _first(_get_any(analysis, "executive_summary", "detailedReport", "summary", "overview")), key="executive_summary", prefer="p", anchor_id="sec-exec"))
-    S.append(_mk_section("Sleep Metrics", _get_any(analysis, "sleep_metrics", "sleepMetrics"), key="sleep_metrics", prefer="kv", anchor_id="sec-metrics"))
-    S.append(_mk_section("Sleep Stages", _get_any(analysis, "sleep_stages", "sleepStages"), key="sleep_stages", prefer="kv", anchor_id="sec-stages"))
-    S.append(_mk_section("Efficiency Analysis", _get_any(analysis, "sleep_efficiency_analysis", "efficiencyAnalysis"), key="efficiency", prefer="p", anchor_id="sec-eff"))
-    S.append(_mk_section("Depth Analysis", _get_any(analysis, "sleep_depth_analysis", "depthAnalysis"), key="depth", prefer="p", anchor_id="sec-depth"))
-    S.append(_mk_section("Recovery Analysis", _get_any(analysis, "recovery_analysis", "recoveryAnalysis"), key="recovery", prefer="p", anchor_id="sec-recov"))
-    S.append(_mk_section("Environment", _get_any(analysis, "environment_analysis", "environmentAnalysis"), key="environment", prefer="kv", anchor_id="sec-env"))
-    S.append(_mk_section("Behavioral Factors", _get_any(analysis, "behavioral_factors", "behavioralFactors"), key="behavior", prefer="list", anchor_id="sec-behav"))
-    S.append(_mk_section("Sleep Patterns", _get_any(analysis, "sleep_patterns", "sleepPatterns"), key="patterns", prefer="kv", anchor_id="sec-patterns"))
-    S.append(_mk_section("Sleep Trends", _get_any(analysis, "sleep_trends", "sleepTrends"), key="trends", prefer="kv", anchor_id="sec-trends"))
-    S.append(_mk_section("Daily Comparison", _get_any(analysis, "daily_comparison", "dailyComparison"), key="daily", prefer="kv", anchor_id="sec-daily"))
-    S.append(_mk_section("Key Insights", _get_any(analysis, "key_insights", "keyInsights"), key="insights", prefer="list", anchor_id="sec-insights"))
-    S.append(_mk_section("Recommendations", _get_any(analysis, "recommendations"), key="recommendations", prefer="list", anchor_id="sec-recos"))
-    S.append(_mk_section("Action Items", _get_any(analysis, "action_items", "actionItems"), key="action_items", prefer="list", anchor_id="sec-actions"))
-    S.append(_mk_section("Predictive Warnings", _get_any(analysis, "predictive_warnings", "predictiveWarnings"), key="warnings", prefer="list", anchor_id="sec-warn"))
-    S.append(_mk_section("Dream & Mood Forecast", _first(_get_any(analysis, "dream_mood_forecast", "dreamMoodForecast", "dreamForecast", "moodForecast")), key="dream", prefer="p", anchor_id="sec-dream"))
-    S.append(_mk_section("Risk Assessment", _get_any(analysis, "risk_assessment", "riskAssessment"), key="risk", prefer="kv", anchor_id="sec-risk"))
-    S.append(_mk_section("Energy Plan", _get_any(analysis, "daily_energy_plan", "energy_plan"), key="energy", prefer="p", anchor_id="sec-energy"))
-    for title, key, anchor in [
-        ("HRV Summary", "hrv_summary", "sec-hrv"),
-        ("Respiratory Events", "respiratory_events", "sec-resp"),
-        ("Glucose Correlation", "glucose_correlation", "sec-glucose"),
-        ("Nutrition Correlation", "nutrition_correlation", "sec-nutrition"),
-        ("Drivers", "drivers", "sec-drivers"),
-        ("Causal Graph", "causal_graph", "sec-causal"),
-        ("Energy Timeline", "energy_timeline", "sec-energy-timeline"),
-        ("Next Day Forecast", "next_day_forecast", "sec-next"),
-        ("What-If Scenarios", "what_if_scenarios", "sec-whatif"),
-    ]:
-        S.append(_mk_section(title, _get_any(analysis, key), key=key, prefer="kv", anchor_id=anchor))
-    return [s for s in S if s]
-
-# ----------------------------- AI summary --------------------------
-def _call_groq_summary(analysis: dict) -> str | None:
-    if not GROQ_API_KEY:
-        return None
-    try:
-        payload = {
-            "model": GROQ_MODEL,
-            "temperature": 0.2,
-            "max_tokens": 700,
-            "messages": [
-                {"role": "system", "content":
-                 "You are a careful sleep coach and clinician. Summarize the user's sleep strictly from the given JSON. "
-                 "Do not invent numbers. Be concise and structured (bullets). Include: Overall quality, Key drivers (2-4), "
-                 "Risks/flags, and 3 personalized, actionable recommendations. Tone: supportive and practical."},
-                {"role": "user", "content": json.dumps(analysis, ensure_ascii=False)}
-            ]
-        }
-        r = requests.post(GROQ_URL, headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        }, json=payload, timeout=30)
-        if r.status_code != 200:
+        fixed = _clean_json_str(text)
+        try:
+            return json.loads(fixed)
+        except Exception:
             return None
-        data = r.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content")
-        return content
-    except Exception:
+
+def _data_uri_from_bytes(content: bytes, mime: str) -> str:
+    b64 = base64.b64encode(content).decode('ascii')
+    return f'data:{mime};base64,{b64}'
+
+def _guess_mime_from_ext(url: str) -> str:
+    url = url.lower()
+    if url.endswith('.png'):
+        return 'image/png'
+    if url.endswith('.jpg') or url.endswith('.jpeg'):
+        return 'image/jpeg'
+    if url.endswith('.svg'):
+        return 'image/svg+xml'
+    return 'application/octet-stream'
+
+def _fetch_and_embed_image(path_or_url: str) -> Optional[str]:
+    '''
+    Accepts http(s) URL, local path, or data URI. Returns a data URI.
+    '''
+    if not path_or_url:
         return None
+    if path_or_url.startswith('data:'):
+        return path_or_url
+    if path_or_url.startswith('http://') or path_or_url.startswith('https://'):
+        try:
+            r = requests.get(path_or_url, timeout=15)
+            r.raise_for_status()
+            mime = r.headers.get('Content-Type') or _guess_mime_from_ext(path_or_url)
+            return _data_uri_from_bytes(r.content, mime)
+        except Exception:
+            return None
+    # local file path
+    if os.path.exists(path_or_url):
+        try:
+            with open(path_or_url, 'rb') as f:
+                data = f.read()
+            mime = _guess_mime_from_ext(path_or_url)
+            return _data_uri_from_bytes(data, mime)
+        except Exception:
+            return None
+    return None
 
-# ----------------------------- Template ----------------------------
-HTML_TEMPLATE = Template(r"""
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>{{ title }}</title>
-  <style>
-    @page {
-      size: A4;
-      margin: 16mm 14mm 20mm 14mm;
-      @bottom-center { content: "Sleep Moon · " counter(page) " / " counter(pages); font-size: 10px; color: #687085; }
-    }
-    :root { --ink:#0f172a; --muted:#475569; --chip:#eef2ff; --line:#e5e7eb; --panel:#f8fafc; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, "Noto Sans", "DejaVu Sans", sans-serif; color: var(--ink); }
-    h1 { font-size: 30px; margin:0 0 4px 0; }
-    .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
-    h2 { font-size: 16px; margin: 18px 0 8px; color: var(--ink); border-bottom: 1px solid var(--line); padding-bottom: 4px; }
-    .chips { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 14px; }
-    .chip { padding:6px 10px; background: var(--chip); border-radius: 999px; font-size: 11px; }
-    .sec { margin: 8px 0 14px; page-break-inside: avoid; }
-    .sec .caption { color: var(--muted); font-size: 11px; margin-top: 4px; }
-    .kv { width: 100%; border-collapse: collapse; }
-    .kv td { border-top:1px solid var(--line); padding:6px 8px; font-size:12px; vertical-align: top; }
-    .kv td.k { width: 32%; font-weight:600; color:#475569; }
-    ul { margin: 0 0 0 18px; font-size: 12.5px; }
-    pre { background: var(--panel); border:1px solid var(--line); padding:10px 12px; border-radius:8px; font-size:11.5px; white-space: pre-wrap; }
-    p { font-size:12.5px; margin:6px 0; }
-    .imgwrap { border:1px solid var(--line); border-radius:8px; padding:6px; margin-top:8px; text-align:center; background: #fff; }
-    .imgwrap img { max-width:100%; max-height:360px; }
-    .cover { page-break-after: always; margin-top: 28mm; text-align:center; }
-    .cover h1 { font-size: 36px; margin-bottom: 6px; }
-    .cover .subtitle { font-size: 14px; margin-bottom: 24px; }
-    .meta { color:#475569; font-size: 12px; }
-    .toc { background: var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin: 8px 0 16px; }
-    .toc h3 { margin: 0 0 6px; font-size: 13px; color:#111827; }
-    .toc a { text-decoration: none; color: #334155; font-size: 12px; }
-    .icon { font-size: 14px; margin-right: 6px; }
-  </style>
-</head>
-<body>
+# --------------------- Simple SVG Chart Generators ---------------------
+def _svg_bar_chart(title: str, series: List[Dict[str, Any]], width: int = 700, height: int = 280) -> str:
+    '''
+    series = [{ 'label': 'Mon', 'value': 40 }, ...]
+    '''
+    padding = 24
+    chart_w = width - padding * 2
+    chart_h = height - padding * 2 - 24  # leave room for title
+    values = [float(s.get('value', 0) or 0) for s in series] or [0.0]
+    max_v = max(values) or 1.0
+    bar_w = chart_w / max(1, len(series))
+    x0 = padding
+    y0 = padding + 20  # shift down for title
 
-  <!-- Cover -->
-  <div class="cover">
-    <h1>{{ title }}</h1>
-    {% if subtitle %}<div class="subtitle">{{ subtitle }}</div>{% endif %}
-    <div class="meta">Generated at {{ generated_at }}</div>
-    {% if chips %}
-      <div class="chips" style="justify-content:center;margin-top:18px;">
-        {% for k, v in chips.items() %}
-          <div class="chip"><strong>{{ k }}:</strong>&nbsp;{{ v }}</div>
-        {% endfor %}
+    rects = []
+    labels = []
+    for i, s in enumerate(series):
+        v = float(s.get('value', 0) or 0)
+        h = 0 if max_v <= 0 else (v / max_v) * (chart_h - 20)
+        x = x0 + i * bar_w + 6
+        y = y0 + (chart_h - h)
+        rects.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w-12:.1f}" height="{h:.1f}" rx="6" />')
+        labels.append(f'<text x="{x + (bar_w-12)/2:.1f}" y="{y0 + chart_h + 16:.1f}" font-size="11" text-anchor="middle">{_escape(str(s.get("label","")))}</text>')
+
+    grid = []
+    for gy in range(5):
+        y = y0 + gy * (chart_h/4)
+        grid.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+chart_w}" y2="{y:.1f}" stroke="#ddd" stroke-dasharray="3,3" />')
+
+    title_el = f'<text x="{width/2:.1f}" y="{padding+8:.1f}" font-size="14" font-weight="600" text-anchor="middle">{_escape(title)}</text>'
+
+    svg = f'''
+    <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#2C7BE5"/>
+          <stop offset="100%" stop-color="#6C63FF"/>
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="white"/>
+      {title_el}
+      <g fill="url(#g1)" stroke="none">
+        {''.join(grid)}
+        {''.join(rects)}
+      </g>
+      <g fill="#333">
+        {''.join(labels)}
+      </g>
+    </svg>
+    '''
+    return svg
+
+def _svg_donut_chart(title: str, items: List[Dict[str, Any]], width: int = 260, height: int = 260) -> str:
+    '''
+    items = [{ 'label':'Deep', 'value':30 }, ...] -> percentage donut
+    '''
+    total = sum(float(i.get('value', 0) or 0) for i in items) or 1.0
+    cx, cy, r = width/2, height/2, min(width, height)/2 - 16
+    stroke_w = 28
+    start_angle = -90  # start at top
+    arcs = []
+    legend = []
+    colors = ['#2C7BE5', '#6C63FF', '#00C9A7', '#F7B924', '#FF6F61', '#A78BFA', '#22D3EE']
+    for idx, item in enumerate(items):
+        val = float(item.get('value', 0) or 0)
+        pct = (val / total)
+        ang = pct * 360.0
+        end_angle = start_angle + ang
+        large_arc = 1 if ang > 180 else 0
+
+        # polar to cart
+        def pt(angle_deg):
+            import math
+            rad = math.radians(angle_deg)
+            return cx + r * math.cos(rad), cy + r * math.sin(rad)
+
+        x1, y1 = pt(start_angle)
+        x2, y2 = pt(end_angle)
+        color = colors[idx % len(colors)]
+        path = (
+            f'<path d="M{x1:.2f},{y1:.2f} A{r:.2f},{r:.2f} 0 {large_arc} 1 {x2:.2f},{y2:.2f}" '
+            f'stroke="{color}" stroke-width="{stroke_w}" fill="none" />'
+        )
+        arcs.append(path)
+        legend.append(f'<div style="display:flex;align-items:center;gap:8px;margin:2px 0;"><span style="display:inline-block;width:10px;height:10px;background:{color};border-radius:2px;"></span><span style="font-size:12px;color:#333">{_escape(str(item.get("label","")))} — {round(pct*100)}%</span></div>')
+        start_angle = end_angle
+
+    title_el = f'<div style="text-align:center;font-size:14px;font-weight:600;margin-bottom:8px">{_escape(title)}</div>'
+    center_text = '<text x="{:.1f}" y="{:.1f}" font-size="14" text-anchor="middle" fill="#333">100%</text>'.format(cx, cy+5)
+
+    svg = f'''
+    <div style="display:flex;gap:16px;align-items:center;justify-content:center;">
+      <div>
+        {title_el}
+        <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="{cx}" cy="{cy}" r="{r}" fill="#f9fafb"/>
+          {''.join(arcs)}
+          {center_text}
+        </svg>
       </div>
-    {% endif %}
-  </div>
-
-  <!-- AI Summary (optional) -->
-  {% if ai_summary %}
-  <div class="sec" id="sec-ai">
-    <h2><span class="icon">🧠</span>AI Doctor Summary</h2>
-    <div class="panel">{{ ai_summary | safe }}</div>
-  </div>
-  {% endif %}
-
-  <!-- TOC -->
-  {% if sections %}
-  <div class="toc">
-    <h3>Table of Contents</h3>
-    {% for i, s in enumerate(sections) %}
-      <div><a href="#{{ s.anchor or ('sec-' ~ i) }}">• {{ s.title }}</a></div>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  <!-- Content Sections -->
-  {% for i, sec in enumerate(sections) %}
-    <div class="sec" id="{{ sec.anchor or ('sec-' ~ i) }}">
-      <h2>
-        {% if 'stage' in sec.title|lower %}<span class="icon">🛌</span>{% elif 'trend' in sec.title|lower %}<span class="icon">📈</span>{% elif 'hrv' in sec.title|lower %}<span class="icon">❤️‍🩹</span>{% elif 'risk' in sec.title|lower %}<span class="icon">⚠️</span>{% else %}<span class="icon">📄</span>{% endif %}
-        {{ sec.title }}
-      </h2>
-      {{ sec.html | safe }}
-      {% if sec.image %}
-        <div class="imgwrap"><img src="{{ sec.image }}"/></div>
-        {% if sec.caption %}<div class="caption">{{ sec.caption }}</div>{% endif %}
-      {% endif %}
+      <div>
+        {''.join(legend)}
+      </div>
     </div>
-  {% endfor %}
+    '''
+    return svg
 
-</body>
-</html>
-""")
+def _svg_line_chart(title: str, series: List[Dict[str, Any]], width: int = 700, height: int = 260) -> str:
+    '''
+    series = [{ 'label':'2025-09-01', 'value': 72 }, ...]
+    '''
+    padding = 30
+    chart_w = width - padding * 2
+    chart_h = height - padding * 2 - 20
+    values = [float(s.get('value', 0) or 0) for s in series] or [0.0]
+    max_v = max(values) or 1.0
+    min_v = min(values) if max_v != min(values) else 0.0
+    if max_v == min_v:
+        max_v += 1.0
+    x0 = padding
+    y0 = padding + 10
 
-# ----------------------------- Endpoint ---------------------------
-@pdf_bp.post("/api/pdf/sleep-report")
-def api_sleep_report():
-    """
-    JSON body:
-    {
-      "title": "Sleep Analysis Report",
-      "subtitle": "Sleep Moon · AI Insights",
-      "chips": {"Score":"92","Chronotype":"Evening"},
-      "analysis": {...},
-      "sections": [
-        {"title":"Sleep Stages Chart", "image":"<base64>", "caption":"Stages breakdown"},
-        {"title":"Trends", "image":"<base64>"}
-      ],
-      "ai_summary": true   # optional: call Groq and include AI Doctor Summary
+    pts = []
+    for i, s in enumerate(series):
+        x = x0 + i * (chart_w / max(1, len(series)-1))
+        val = float(s.get('value', 0) or 0)
+        y = y0 + (1 - (val - min_v) / (max_v - min_v)) * chart_h
+        pts.append((x, y))
+
+    polyline = ' '.join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    labels = []
+    for i, s in enumerate(series):
+        x, y = pts[i]
+        lbl = str(s.get('label', ''))
+        labels.append(f'<text x="{x:.1f}" y="{y0 + chart_h + 16:.1f}" font-size="10" text-anchor="middle">{_escape(lbl)}</text>')
+
+    title_el = f'<text x="{width/2:.1f}" y="{padding-2:.1f}" font-size="14" font-weight="600" text-anchor="middle">{_escape(title)}</text>'
+    grid = []
+    for gy in range(5):
+        y = y0 + gy * (chart_h/4)
+        grid.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+chart_w}" y2="{y:.1f}" stroke="#ddd" stroke-dasharray="3,3" />')
+
+    svg = f'''
+    <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="gl" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#00C9A7"/>
+          <stop offset="100%" stop-color="#6C63FF"/>
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="white"/>
+      {title_el}
+      {''.join(grid)}
+      <polyline fill="none" stroke="url(#gl)" stroke-width="3" points="{polyline}"/>
+      <g fill="#333">
+        {''.join(labels)}
+      </g>
+    </svg>
+    '''
+    return svg
+
+# ----------------------------- Groq LLM -----------------------------
+def _groq_structured_analysis(user_payload: dict) -> dict:
+    if not GROQ_API_KEY:
+        # No key: assume payload already has what we need
+        return {
+            'meta': {
+                'generated_at': _now_iso(),
+                'model': GROQ_MODEL,
+                'title': user_payload.get('title') or 'Smart Analysis Report',
+                'subtitle': user_payload.get('subtitle') or 'AI‑assisted summary and insights',
+            },
+            'overview': user_payload.get('overview') or 'Auto mode (no GROQ_API_KEY set). Using provided payload.',
+            'insights': user_payload.get('insights') or [
+                'Provide a Groq API key to enable AI‑generated insights.',
+                'You can still pass your own \'sections\' or \'insights\' to render.'
+            ],
+            'recommendations': user_payload.get('recommendations') or [
+                'Connect Groq to generate personalized suggestions.',
+            ],
+            'charts': user_payload.get('charts') or [],
+            'sections': user_payload.get('sections') or [],
+            'images': user_payload.get('images') or [],
+            'metrics': user_payload.get('metrics') or {},
+        }
+
+    headers = {
+        'Authorization': f'Bearer {GROQ_API_KEY}',
+        'Content-Type': 'application/json'
     }
-    """
-    try:
-      data = request.get_json(force=True, silent=False) or {}
-    except Exception as e:
-      return jsonify({"error": f"Invalid JSON: {e}"}), 400
 
-    title = data.get("title") or "Sleep Analysis Report"
-    subtitle = data.get("subtitle") or "Sleep Moon · AI Insights"
-    chips = data.get("chips") or {}
-    analysis = data.get("analysis") or {}
-    incoming_sections = data.get("sections") or []
-    want_ai = bool(data.get("ai_summary"))
-
-    # Build sections from analysis
-    sections = build_sections_from_analysis(analysis)
-
-    # Append any image/extra sections from client
-    for s in incoming_sections:
-        if not isinstance(s, dict):
-            continue
-        title_s = s.get("title") or "Section"
-        image = s.get("image")
-        caption = s.get("caption")
-        html = s.get("html")
-        body = s.get("body")
-        sec = None
-        if html or body is not None:
-            if not html and body is not None:
-                html, _ = _format_value_html(body, prefer="auto")
-            sec = _mk_section(title_s, value=None, image=image, anchor_id=None)
-            if sec:
-                sec["html"] = html or ""
-        else:
-            sec = _mk_section(title_s, value=None, image=image, anchor_id=None)
-
-        if sec and caption:
-            sec["caption"] = caption
-        if sec:
-            sections.append(sec)
-
-    # AI Summary (optional)
-    ai_summary_html = None
-    if want_ai:
-        ai_txt = _call_groq_summary(analysis)
-        if ai_txt:
-            ai_summary_html, _ = _format_value_html(ai_txt, prefer="p")
-
-    # Render
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    html = HTML_TEMPLATE.render(
-        title=title,
-        subtitle=subtitle,
-        chips=chips,
-        sections=sections,
-        ai_summary=ai_summary_html,
-        generated_at=generated_at,
-        enumerate=enumerate,  # pass enumerate into template
+    sys_prompt = (
+        'You are a data‑savvy sleep & wellness assistant. '
+        "Given the user's JSON payload, produce STRICT JSON with keys: "
+        'meta{title,subtitle}, overview, insights[], recommendations[], sections[], charts[], images[], metrics{}. '
+        'Each section: {title, body}. '
+        "charts is an array of chart specs: {type: 'bar'|'line'|'donut', title, data: [ {label, value} ]}. "
+        'images is a list of {title, url_or_data_uri}. '
+        'DO NOT include prose outside JSON. DO NOT include markdown fences.'
     )
 
-    pdf_io = BytesIO()
-    HTML(string=html).write_pdf(pdf_io, stylesheets=[CSS(string="")])
-    pdf_io.seek(0)
-    return send_file(pdf_io, mimetype="application/pdf", as_attachment=True, download_name="sleep_report.pdf")
+    user_prompt = {
+        'role': 'user',
+        'content': json.dumps(user_payload, ensure_ascii=False)
+    }
+
+    body = {
+        'model': GROQ_MODEL,
+        'messages': [
+            {'role': 'system', 'content': sys_prompt},
+            user_prompt
+        ],
+        'temperature': 0.3
+    }
+
+    r = requests.post(GROQ_URL, headers=headers, data=json.dumps(body), timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    content = data['choices'][0]['message']['content']
+    parsed = _extract_json(content)
+    if not parsed:
+        raise ValueError('LLM returned non‑JSON or unparseable content')
+    parsed.setdefault('meta', {})
+    parsed['meta'].setdefault('generated_at', _now_iso())
+    parsed['meta'].setdefault('model', GROQ_MODEL)
+    parsed.setdefault('overview', '')
+    parsed.setdefault('insights', [])
+    parsed.setdefault('recommendations', [])
+    parsed.setdefault('sections', [])
+    parsed.setdefault('charts', [])
+    parsed.setdefault('images', [])
+    parsed.setdefault('metrics', {})
+    return parsed
+
+# ----------------------------- HTML Template -----------------------------
+BASE_CSS = CSS(string='''
+@page {
+  size: A4;
+  margin: 20mm 15mm 22mm 15mm;
+  @bottom-center {
+    content: "Page " counter(page) " of " counter(pages);
+    font-size: 10px;
+    color: #666;
+  }
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Open Sans', sans-serif;
+  color: #111827;
+}
+h1, h2, h3 { color: #111827; margin: 0; }
+.section { page-break-inside: avoid; margin: 10px 0 18px; }
+.card {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: white;
+}
+.kicker { color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 10px; background: #EEF2FF; color: #4338CA; font-size: 11px;
+}
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+.hero {
+  border-radius: 16px;
+  padding: 18px;
+  background: linear-gradient(135deg, #EEF2FF, #E6FFFA);
+  border: 1px solid #e5e7eb;
+}
+.small { font-size: 12px; color: #6b7280; }
+.hr { height: 1px; background: #e5e7eb; margin: 8px 0; }
+.img { width: 100%; border-radius: 10px; border: 1px solid #e5e7eb; }
+ul { margin: 6px 0 6px 20px; }
+''')
+
+def _render_html(ctx: dict) -> str:
+    hero_svg = f'''
+    <svg viewBox="0 0 820 120" width="100%" height="120" xmlns="http://www.w3.org/2000/svg" style="border-radius:12px">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#6366F1"/>
+          <stop offset="100%" stop-color="#06B6D4"/>
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="820" height="120" fill="url(#bg)" rx="12"/>
+      <text x="24" y="48" font-size="22" fill="white" font-weight="600">{_escape(ctx["meta"].get("title", "Smart Report"))}</text>
+      <text x="24" y="76" font-size="14" fill="#E0E7FF">{_escape(ctx["meta"].get("subtitle", ""))}</text>
+      <text x="24" y="100" font-size="11" fill="#E0E7FF">Generated: {_escape(ctx["meta"].get("generated_at",""))}</text>
+    </svg>
+    '''
+
+    # Charts (SVG strings) from ctx["charts"]
+    chart_blocks = []
+    for ch in ctx.get('charts', []):
+        ctype = (ch.get('type') or '').lower()
+        title = ch.get('title') or 'Chart'
+        data = ch.get('data') or []
+        if ctype == 'bar':
+            chart_blocks.append(_svg_bar_chart(title, data))
+        elif ctype == 'donut':
+            chart_blocks.append(_svg_donut_chart(title, data))
+        else:
+            chart_blocks.append(_svg_line_chart(title, data))
+
+    # Images
+    image_blocks = []
+    for img in ctx.get('images', []):
+        src = img.get('url_or_data_uri')
+        if src:
+            data_uri = _fetch_and_embed_image(src)
+            if data_uri:
+                ttl = _escape(img.get('title',''))
+                image_blocks.append(f'<div class="card"><div class="small" style="margin-bottom:6px">{ttl}</div><img class="img" src="{data_uri}"/></div>')
+
+    # Sections
+    section_blocks = []
+    for sec in ctx.get('sections', []):
+        title = _escape(str(sec.get('title','Section')))
+        body  = str(sec.get('body','')).replace('\n', '<br/>')
+        section_blocks.append(f'<div class="card section"><div class="kicker">{title}</div><div style="margin-top:6px;font-size:13px;line-height:1.5">{body}</div></div>')
+
+    # Insights / Recs
+    insights = ctx.get('insights') or []
+    recs = ctx.get('recommendations') or []
+
+    tpl = Template('''
+    <html>
+      <body>
+        <div class="hero">{{ hero_svg | safe }}</div>
+
+        <div class="section grid-2">
+          <div class="card">
+            <div class="kicker">Overview</div>
+            <div style="margin-top:6px;font-size:13px;line-height:1.5">{{ overview|safe }}</div>
+          </div>
+          <div class="card">
+            <div class="kicker">At a glance</div>
+            <ul>
+              {% for i in insights %}<li>{{ i }}</li>{% endfor %}
+            </ul>
+            <div class="hr"></div>
+            <div class="kicker" style="margin-top:6px">Recommendations</div>
+            <ul>
+              {% for r in recs %}<li>{{ r }}</li>{% endfor %}
+            </ul>
+          </div>
+        </div>
+
+        {% if chart_blocks %}
+        <div class="section card">
+          <div class="kicker">Charts</div>
+          {% for c in chart_blocks %}
+            <div style="margin:8px 0">{{ c | safe }}</div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if image_blocks %}
+        <div class="section card">
+          <div class="kicker">Images</div>
+          <div class="grid-2" style="margin-top:8px">
+            {% for im in image_blocks %}{{ im | safe }}{% endfor %}
+          </div>
+        </div>
+        {% endif %}
+
+        {% for sec in section_blocks %}
+          {{ sec | safe }}
+        {% endfor %}
+      </body>
+    </html>
+    ''')
+    html = tpl.render(
+        hero_svg=hero_svg,
+        overview=_escape(ctx.get('overview','')).replace('\n', '<br/>'),
+        insights=insights,
+        recs=recs,
+        chart_blocks=chart_blocks,
+        image_blocks=image_blocks,
+        section_blocks=section_blocks,
+    )
+    return html
+
+# ----------------------------- Route -----------------------------
+@pdf_bp.route('/generate', methods=['POST'])
+def generate_pdf():
+    '''
+    POST JSON:
+    {
+      "title": "...",
+      "subtitle": "...",
+      "overview": "...",
+      "insights": ["...", "..."],
+      "recommendations": ["...", "..."],
+      "sections": [{"title":"", "body":""}, ...],
+      "charts": [
+        {"type":"bar","title":"Scores","data":[{"label":"Mon","value":64}, ...]},
+        {"type":"donut","title":"Sleep Stages","data":[{"label":"Deep","value":90}, ...]},
+        {"type":"line","title":"Trend","data":[{"label":"2025-09-01","value":72}, ...]}
+      ],
+      "images": [{"title":"Hypnogram","url_or_data_uri":"https://... or data:..."}],
+      "metrics": {...},
+      "auto_groq": true,
+      "download_filename": "sleep_report.pdf"
+    }
+    '''
+    try:
+        payload = request.get_json(force=True, silent=False) or {}
+    except Exception:
+        return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
+
+    auto_groq = bool(payload.get('auto_groq')) or not any([
+        payload.get('overview'),
+        payload.get('insights'),
+        payload.get('sections')
+    ])
+
+    try:
+        if auto_groq:
+            ctx = _groq_structured_analysis(payload)
+        else:
+            # Build ctx directly from payload
+            ctx = {
+                'meta': {
+                    'generated_at': _now_iso(),
+                    'model': GROQ_MODEL,
+                    'title': payload.get('title') or 'Smart Analysis Report',
+                    'subtitle': payload.get('subtitle') or '',
+                },
+                'overview': payload.get('overview') or '',
+                'insights': payload.get('insights') or [],
+                'recommendations': payload.get('recommendations') or [],
+                'sections': payload.get('sections') or [],
+                'charts': payload.get('charts') or [],
+                'images': payload.get('images') or [],
+                'metrics': payload.get('metrics') or {},
+            }
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'GROQ request failed: {str(e)}'}), 500
+
+    # Render HTML
+    html = _render_html(ctx)
+
+    # Make PDF
+    try:
+        pdf_bytes = HTML(string=html, base_url='.').write_pdf(stylesheets=[BASE_CSS])
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'PDF render failed: {str(e)}'}), 500
+
+    # Deliver
+    filename = payload.get('download_filename') or (ctx['meta'].get('title','report').lower().replace(' ', '_') + '.pdf')
+    return send_file(BytesIO(pdf_bytes), as_attachment=True, download_name=filename, mimetype='application/pdf')
+
+# ----------------------------- Quick Self-Test (optional) -----------------------------
+@pdf_bp.route('/_demo', methods=['GET'])
+def _demo():
+    demo_ctx = {
+        'title': 'Sleep AI Report',
+        'subtitle': 'Personalized analysis',
+        'overview': 'Your sleep quality improved this week. Deep sleep increased and wake‑after‑sleep‑onset declined.',
+        'insights': ['Deep sleep up 12%', 'Sleep latency improved', 'Screen time near bedtime still high'],
+        'recommendations': ['Reduce caffeine after 4PM', 'Move workouts earlier', 'Use blue‑light filter 2 hours pre‑bed'],
+        'charts': [
+            {'type':'bar','title':'Sleep Quality (last 7 days)','data':[
+                {'label':'Mon','value':60},{'label':'Tue','value':68},{'label':'Wed','value':62},
+                {'label':'Thu','value':74},{'label':'Fri','value':70},{'label':'Sat','value':78},{'label':'Sun','value':73}
+            ]},
+            {'type':'donut','title':'Sleep Stages','data':[
+                {'label':'Deep','value':90},{'label':'REM','value':110},{'label':'Light','value':160},{'label':'Awake','value':20}
+            ]},
+            {'type':'line','title':'Latency (mins)','data':[
+                {'label':'09-01','value':28},{'label':'09-02','value':24},{'label':'09-03','value':22},
+                {'label':'09-04','value':20},{'label':'09-05','value':21},{'label':'09-06','value':19},{'label':'09-07','value':18}
+            ]}
+            ],
+        'images': [
+            {'title':'Sample Hypnogram','url_or_data_uri':'https://upload.wikimedia.org/wikipedia/commons/3/30/Hypnogram.svg'}
+        ],
+        'download_filename': 'demo_sleep_ai_report.pdf'
+    }
+    with pdf_bp.test_request_context(json=demo_ctx):
+        return generate_pdf()

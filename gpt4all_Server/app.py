@@ -132,29 +132,64 @@ def call_llm(
     - LLM_PROVIDER=groq             -> https://api.groq.com/openai/v1/chat/completions
     """
     try:
-    messages = [{"role": "system", "content": system_msg}]
-    if json_mode:
-        user_msg = (
-            user_prompt.rstrip()
-            + "\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
-        )
-    else:
-        user_msg = user_prompt
+        # ---------- Build messages ----------
+        messages = [{"role": "system", "content": system_msg}]
 
-    messages.append({"role": "user", "content": user_msg})
+        if json_mode:
+            user_msg = (
+                user_prompt.rstrip()
+                + "\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
+            )
+        else:
+            user_msg = user_prompt
 
-    payload = {
-        "model": LLM_MODEL,
-        "messages": messages,
-        "temperature": float(temperature),
-        "max_tokens": int(max_tokens),
-    }
+        messages.append({"role": "user", "content": user_msg})
 
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
+        # ---------- Build payload ----------
+        payload = {
+            "model": LLM_MODEL,
+            "messages": messages,
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+        }
 
-except Exception as e:
-    print(f"Error while building payload: {e}")
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
+        # ---------- Choose provider ----------
+        if LLM_PROVIDER == "groq":
+            if not groq_api_key:
+                return None, "Missing GROQ_API_KEY"
+            url = GROQ_CHAT_URL
+            headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
+        else:
+            url = GPT4ALL_CHAT_URL
+            headers = {"Content-Type": "application/json"}
+
+        # ---------- Call API ----------
+        res = requests.post(url, headers=headers, json=payload, timeout=default_timeout)
+        if res.status_code != 200:
+            return None, f"LLM error: {res.status_code} - {res.text[:300]}"
+
+        data = res.json()
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+        if not content:
+            return None, "Empty response from LLM"
+
+        if json_mode:
+            parsed = extract_json_block(content)
+            if parsed is None:
+                try:
+                    parsed = json.loads(content)
+                except Exception:
+                    return None, "LLM did not return JSON"
+            return parsed, None
+
+        return sanitize_plain_text(content.strip()), None
+
+    except Exception as e:
+        return None, f"LLM call failed: {str(e)}"
+
 
 
         if LLM_PROVIDER == "groq":
@@ -1320,6 +1355,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

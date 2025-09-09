@@ -10,7 +10,7 @@ import requests
 from flask_cors import CORS
 
 app = Flask(__name__)
-from smart_pdf_service import pdf_bp
+from .smart_pdf_service import pdf_bp
 app.register_blueprint(pdf_bp, url_prefix="/pdf")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
@@ -1270,6 +1270,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

@@ -49,7 +49,7 @@ GPT4ALL_CHAT_URL = f"{GPT4ALL_BASE}/chat/completions"
 # Model name
 # Example low-RAM choice for local server: "phi-3-mini-4k-instruct-q4_0"
 # Example Groq: "gemma2-9b-it"
-LLM_MODEL = (os.getenv("LLM_MODEL") or "mixtral-8x7b-32768").strip()
+LLM_MODEL = (os.getenv("LLM_MODEL") or "gemma2-9b-it").strip()
 
 
 # Image search (optional)
@@ -1375,6 +1375,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

@@ -26,8 +26,23 @@ groq_api_key = os.getenv("GROQ_API_KEY")
 pixabay_api_key = os.getenv("PIXABAY_API_KEY")
 default_timeout = int(os.getenv("HTTP_TIMEOUT_SECONDS", "30"))
 
-# API endpoints
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+# ========== NEW: LLM provider config ==========
+# Choose between:
+#   - gpt4all  -> local server (default)
+#   - groq     -> hosted Groq API
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gpt4all").strip().lower()
+
+# Base URLs
+GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
+GPT4ALL_BASE = os.getenv("LLM_BASE_URL", "http://localhost:4891/v1")
+GPT4ALL_CHAT_URL = f"{GPT4ALL_BASE.rstrip('/')}/chat/completions"
+
+# Model name (confirm available models via GET {LLM_BASE_URL}/models)
+# Example good low-RAM choice:
+#   Phi-3 Mini 4K Instruct (4-bit): "phi-3-mini-4k-instruct-q4_0"
+LLM_MODEL = os.getenv("LLM_MODEL", "phi-3-mini-4k-instruct-q4_0").strip()
+
+# (Kept for reference of your image search)
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
 # ===================== Helpers (shared) =====================
@@ -52,68 +67,26 @@ def sanitize_plain_text(text: str) -> str:
     if not text:
         return ""
     t = text
-    # Replace code fences with inner content
     t = _MD_CODE_FENCE.sub(lambda m: m.group(1), t)
-    # Drop headings markup
     t = _MD_HEADING.sub("", t)
-    # Normalize bullets to "- "
     t = _MD_LIST_BULLET.sub("- ", t)
-    # Remove block quotes
     t = _MD_QUOTE.sub("", t)
-    # Trim excessive blank lines
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
 
-def call_groq(user_prompt, *, json_mode=False, temperature=0.6, max_tokens=1200, system_msg="You are Silent Veil, a calm sleep coach assistant."):
-    """Call Groq. If json_mode=True, strongly enforce JSON-only outputs and attempt JSON extraction."""
-    if not groq_api_key:
-        return None, "No GROQ_API_KEY"
+def extract_json_block(text):
+    """Extract the first top-level JSON object/array in text and parse it. Returns Python obj or None."""
+    if not text:
+        return None
+    brace = re.search(r"\{(?:[^{}]|(?:\{[^{}]*\}))*\}", text, re.DOTALL)
+    brack = re.search(r"\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\]", text, re.DOTALL)
+    m = brace if brace and (not brack or brace.start() < brack.start()) else brack
+    if not m:
+        return None
     try:
-        messages = [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_prompt if not json_mode else (
-                user_prompt.rstrip() +
-                "\n\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
-            )}
-        ]
-        payload = {
-            "model": "gemma2-9b-it",
-            "messages": messages,
-            "temperature": float(temperature),
-            "max_tokens": int(max_tokens),
-        }
-        # Attempt OpenAI-compatible JSON mode if supported by backend (ignored by some models)
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-
-        res = requests.post(
-            GROQ_API_URL,
-            headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=default_timeout,
-        )
-        if res.status_code != 200:
-            return None, f"Groq API error: {res.status_code} - {res.text[:300]}"
-        data = res.json()
-        content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
-        if not content:
-            return None, "Empty response from Groq"
-
-        # If JSON mode, try to parse, else sanitize to plain text
-        if json_mode:
-            parsed = extract_json_block(content)
-            if parsed is None:
-                # model ignored JSON instruction — try to coerce by trimming and re-parsing
-                try:
-                    parsed = json.loads(content)
-                except Exception:
-                    return None, "Groq did not return JSON"
-            return parsed, None
-        else:
-            return sanitize_plain_text(content.strip()), None
-
-    except Exception as e:
-        return None, f"Groq call failed: {str(e)}"
+        return json.loads(m.group(0))
+    except Exception:
+        return None
 
 def clean_json_output(json_text):
     try:
@@ -126,25 +99,74 @@ def clean_json_output(json_text):
     except Exception:
         return {"raw": json_text}
 
-def extract_json_block(text):
-    """Extract the first top-level JSON object/array in text and parse it. Returns Python obj or None."""
-    if not text:
-        return None
-    # Prefer array/object; greedy but balanced patterns are tricky — try simple heuristics
-    # Try object first
-    brace = re.search(r"\{(?:[^{}]|(?:\{[^{}]*\}))*\}", text, re.DOTALL)
-    brack = re.search(r"\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\]", text, re.DOTALL)
-    m = None
-    if brace and brack:
-        m = brace if brace.start() < brack.start() else brack
-    else:
-        m = brace or brack
-    if not m:
-        return None
+# ========== NEW: provider-agnostic LLM caller ==========
+def call_llm(
+    user_prompt,
+    *,
+    json_mode=False,
+    temperature=0.6,
+    max_tokens=1200,
+    system_msg="You are Silent Veil, a calm sleep coach assistant."
+):
+    """
+    Calls either GPT4All local server or Groq (OpenAI-compatible) based on env.
+    - LLM_PROVIDER=gpt4all (default) -> http://localhost:4891/v1/chat/completions
+    - LLM_PROVIDER=groq             -> https://api.groq.com/openai/v1/chat/completions
+    """
     try:
-        return json.loads(m.group(0))
-    except Exception:
-        return None
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_prompt if not json_mode else (
+                user_prompt.rstrip() + "\n\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
+            )},
+        ]
+
+        payload = {
+            "model": LLM_MODEL,
+            "messages": messages,
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+        }
+        if json_mode:
+            # OpenAI-compatible JSON mode; GPT4All may ignore but it's harmless
+            payload["response_format"] = {"type": "json_object"}
+
+        if LLM_PROVIDER == "groq":
+            if not groq_api_key:
+                return None, "Missing GROQ_API_KEY"
+            url = GROQ_CHAT_URL
+            headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
+        else:
+            # gpt4all (no auth)
+            url = GPT4ALL_CHAT_URL
+            headers = {"Content-Type": "application/json"}
+
+        res = requests.post(url, headers=headers, json=payload, timeout=default_timeout)
+        if res.status_code != 200:
+            return None, f"LLM error: {res.status_code} - {res.text[:300]}"
+
+        data = res.json()
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+        if not content:
+            return None, "Empty response from LLM"
+
+        if json_mode:
+            parsed = extract_json_block(content)
+            if parsed is None:
+                try:
+                    parsed = json.loads(content)
+                except Exception:
+                    return None, "LLM did not return JSON"
+            return parsed, None
+
+        return sanitize_plain_text(content.strip()), None
+
+    except Exception as e:
+        return None, f"LLM call failed: {str(e)}"
+
+# Backward-compatible shim (your code calls this in many places)
+def call_groq(*args, **kwargs):
+    return call_llm(*args, **kwargs)
 
 def search_cartoon_image(query):
     if not pixabay_api_key:
@@ -237,9 +259,6 @@ def _parse_duration_flexible(raw):
 
 # ---------- Legacy shim for old UIs ----------
 def _legacy_report_shim(resp):
-    """
-    Produce old/snake_case + alternative shapes so any UI will render something.
-    """
     legacy = {}
 
     # ---------- Executive Summary ----------
@@ -248,18 +267,12 @@ def _legacy_report_shim(resp):
     es_text = es.get("rawAnalysisPreview") or ""
     if not es_text and es_bullets:
         es_text = "\n".join([str(b) for b in es_bullets if str(b).strip()])
-    # Object form (old code expected .bullets + .text)
-    legacy["executive_summary"] = {
-        "bullets": es_bullets,
-        "text": es_text
-    }
-    # Also provide direct string for super-legacy readers
+    legacy["executive_summary"] = {"bullets": es_bullets, "text": es_text}
     legacy["summary"] = es_text
 
     # ---------- Risk Assessment ----------
     ra = resp.get("riskAssessment") or {}
     comps = ra.get("components") or {}
-    # Build simple hotspots = worst 4 components (<50)
     hotspots = []
     try:
         worst = sorted(
@@ -269,7 +282,6 @@ def _legacy_report_shim(resp):
         hotspots = [k.replace("_", " ").title() for k, v in worst if v < 50][:4]
     except Exception:
         pass
-
     legacy["risk_assessment"] = {
         "score": ra.get("score"),
         "level": ra.get("level"),
@@ -284,31 +296,23 @@ def _legacy_report_shim(resp):
     afternoon = ep.get("afternoon") or []
     evening = ep.get("evening") or []
     flat_plan = []
-    # Flatten into plan items with time_range/action/rationale for old UI
     for label, items in (("morning", morning), ("afternoon", afternoon), ("evening", evening)):
         for a in items:
             flat_plan.append({
-                "time_range": label,           # old key
-                "timeRange": label,            # camel alias
+                "time_range": label,
+                "timeRange": label,
                 "action": str(a),
                 "rationale": ""
             })
-    # Pick a single tip-ish line for old "advice" field
     energy_tip = ""
     for bucket in (evening, afternoon, morning):
         if bucket:
-            energy_tip = str(bucket[0])
-            break
-
-    legacy["energy_plan"] = {
-        "advice": energy_tip,
-        "plan": flat_plan
-    }
+            energy_tip = str(bucket[0]); break
+    legacy["energy_plan"] = {"advice": energy_tip, "plan": flat_plan}
 
     # ---------- Wake Windows ----------
     ww = resp.get("wakeWindows") or {}
     windows = ww.get("windows") or []
-    # Old UI sometimes expects top-level array
     legacy["wake_windows"] = windows
 
     # ---------- What-If Scenarios ----------
@@ -316,20 +320,6 @@ def _legacy_report_shim(resp):
     scenarios = wis.get("scenarios") or []
     legacy["what_if_scenarios"] = scenarios
 
-    # ---------- Lifestyle Correlations ----------
-    # Provide BOTH a map and a list flavor
-    lc_list = resp.get("lifestyleCorrelations") or []
-    lc_map = {}
-    for item in lc_list:
-        if isinstance(item, dict) and (item.get("label") is not None):
-            try:
-                lc_map[str(item.get("label"))] = float(item.get("value") or 0)
-            except Exception:
-                lc_map[str(item.get("label"))] = 0.0
-    legacy["lifestyle_correlations"] = lc_map
-    legacy["lifestyleCorrelations"] = lc_list  # keep the new list form as well
-
-    # ---------- Duplicate camelCase containers some old builds look for ----------
     legacy["executiveSummary"] = legacy["executive_summary"]
     legacy["riskAssessment"] = legacy["risk_assessment"]
     legacy["energyPlan"] = legacy["energy_plan"]
@@ -344,6 +334,8 @@ def _legacy_report_shim(resp):
 def root():
     return jsonify({
         "message": "Silent Veil backend is online 💤",
+        "llm_provider": LLM_PROVIDER,
+        "model": LLM_MODEL,
         "available_routes": [
             "/chat",
             "/generate",
@@ -367,7 +359,7 @@ def chat():
     prompt = (data.get("prompt") or "").strip()
     if not prompt:
         return jsonify(error="Missing 'prompt'"), 400
-    content, err = call_groq(prompt, json_mode=False)
+    content, err = call_llm(prompt, json_mode=False)
     if err:
         return jsonify(error=err), 502
     return jsonify(response=content)
@@ -386,7 +378,7 @@ def generate_story():
         f"and sleep quality '{sleep_quality}', create a calming bedtime story. "
         "Return only the story text, no JSON or formatting."
     )
-    story, err = call_groq(prompt, json_mode=False)
+    story, err = call_llm(prompt, json_mode=False)
     if err:
         return jsonify(error=err), 502
     return jsonify(story=story)
@@ -411,7 +403,7 @@ def generate_stories():
             "Respond in JSON with: title, description, content. "
             "All values must be plain strings. No markdown or nested data."
         )
-        parsed, err = call_groq(prompt, json_mode=True)
+        parsed, err = call_llm(prompt, json_mode=True)
         if err:
             continue
         title = extract_text((parsed or {}).get("title") or f"Oneiric Journey #{i+1}").strip()
@@ -448,7 +440,7 @@ def generate_story_and_image():
         "create a calming bedtime story. Respond in JSON with: title, description, content. "
         "All values must be plain strings. No markdown or nested data."
     )
-    parsed, err = call_groq(prompt, json_mode=True)
+    parsed, err = call_llm(prompt, json_mode=True)
     if err:
         return jsonify(error=err), 502
     title = extract_text(parsed.get("title") or "Oneiric Dream").strip()
@@ -531,7 +523,7 @@ def sleep_analysis():
                 f"Symptoms: {', '.join(symptoms)}"
             )
 
-        text, err = call_groq(prompt, json_mode=False)
+        text, err = call_llm(prompt, json_mode=False)
         if err or not text:
             return jsonify(error="Analysis service error", details=err or "empty"), 502
         return jsonify(analysis=text)
@@ -560,7 +552,7 @@ def _pick_metric_for_compare(log):
         return duration
     deep  = _num_or_0(log.get("deep_sleep_minutes")  or log.get("deepSleepMinutes"))
     rem   = _num_or_0(log.get("rem_sleep_minutes")   or log.get("remSleepMinutes"))
-    light = _num_or_0(log.get("light_sleep_minutes") or log.get("lightSleepMinutes"))
+    light = __num_or_0(log.get("light_sleep_minutes") or log.get("lightSleepMinutes"))
     total = deep + rem + light
     if total > 0:
         return total
@@ -638,7 +630,7 @@ def _summarize_logs_for_highlights(logs):
             m1 = {"sleep_score":"sleep_score","duration_minutes":"duration_minutes","deep":"deep_sleep_minutes",
                   "rem":"rem_sleep_minutes","light":"light_sleep_minutes","quality":"quality",
                   "stress":"stress_level","caffeine":"caffeine_intake","exercise":"exercise_minutes","screen":"screen_time_before_bed"}
-            m2 = {"sleep_score":"sleepScore","duration_minutes":"durationMinutes","deep":"deepSleepMinutes",
+        m2 = {"sleep_score":"sleepScore","duration_minutes":"durationMinutes","deep":"deepSleepMinutes",
                   "rem":"remSleepMinutes","light":"lightSleepMinutes","quality":"sleepQuality",
                   "stress":"stressLevel","caffeine":"caffeineIntake","exercise":"exerciseMinutes","screen":"screenTimeBeforeBed"}
             return _num_or_0(prev.get(m1[key]) or prev.get(m2[key]))
@@ -660,7 +652,7 @@ def ai_highlights():
             "No markdown, no extra text.\n\n"
             f"SUMMARY_JSON = {json.dumps(summary, ensure_ascii=False)}"
         )
-        parsed, err = call_groq(prompt, json_mode=True) if groq_api_key else (None, "No GROQ_API_KEY")
+        parsed, err = call_llm(prompt, json_mode=True)
         highlights = []
         if isinstance(parsed, list):
             for item in parsed[:6]:
@@ -869,13 +861,11 @@ def insights():
     """
     try:
         payload = request.get_json(silent=True) or {}
-        # Flexible extraction
         current = payload.get("current") or payload.get("sleep_data") or payload
         logs = payload.get("logs") or payload.get("recent_logs") or []
 
-        lifestyleCorrelations = []  # what your UI expects
+        lifestyleCorrelations = []
 
-        # If we have history, compute real correlations against sleep outcomes
         if isinstance(logs, list) and len(logs) >= 2:
             lifestyle_keys = {
                 "caffeine_intake": ["caffeine_intake", "caffeineIntake"],
@@ -896,7 +886,6 @@ def insights():
             series_l = {k: _series_from_logs(logs, v) for k, v in lifestyle_keys.items()}
             series_o = {k: _series_from_logs(logs, v) for k, v in outcome_keys.items()}
 
-            # Choose a single outcome to rank by (sleep_score > duration > efficiency)
             outcome_order = ["sleep_score", "duration_minutes", "efficiency"]
             chosen_outcome = None
             for o in outcome_order:
@@ -906,26 +895,23 @@ def insights():
 
             scored = []
             for lk, x in series_l.items():
-                r, n = _pearson_corr(x, series_o[chosen_outcome])
+                r, _ = _pearson_corr(x, series_o[chosen_outcome])
                 scored.append({"label": _labels_from_key(lk), "value": round(r, 3)})
-            # sort by magnitude desc, keep 6 items
             scored.sort(key=lambda d: abs(d["value"]), reverse=True)
             lifestyleCorrelations = scored[:6]
 
         else:
-            # No history provided: produce safe heuristics from current log so UI has content
             caff = _num_or_0(current.get("caffeine_intake") or current.get("caffeineIntake"))
             exer = _num_or_0(current.get("exercise_minutes") or current.get("exerciseMinutes"))
             scrn = _num_or_0(current.get("screen_time_before_bed") or current.get("screenTimeBeforeBed"))
             water= _num_or_0(current.get("water_intake") or current.get("waterIntake"))
             stress=_num_or_0(current.get("stress_level") or current.get("stressLevel"))
-            # simple normalized hints mapped to [-0.4, +0.4]
             def norm(x, hi):
                 return round(_clamp((x/hi)*0.4, 0, 0.4), 3)
             lifestyleCorrelations = [
-                {"label":"Caffeine","value": -norm(caff, 300)},     # higher caffeine → worse
-                {"label":"Exercise","value":  norm(exer, 60)},      # moderate exercise → better
-                {"label":"Screen Time","value": -norm(scrn, 120)},  # more screen → worse
+                {"label":"Caffeine","value": -norm(caff, 300)},
+                {"label":"Exercise","value":  norm(exer, 60)},
+                {"label":"Screen Time","value": -norm(scrn, 120)},
                 {"label":"Water Intake","value":  norm(water, 2500)},
                 {"label":"Stress","value": -norm(stress*10, 100)},
             ]
@@ -1020,7 +1006,7 @@ def report():
                 {"label":"Stress","value": -norm(stress*10, 100)},
             ]
 
-        # 2) Highlights (try GROQ, fallback rules)
+        # 2) Highlights via LLM (with safe fallback)
         summary = _summarize_logs_for_highlights(history if isinstance(history, list) else [])
         prompt_h = (
             "You are Silent Veil, an expert sleep coach. Given the following numeric summary of a user's recent sleep logs, "
@@ -1029,7 +1015,7 @@ def report():
             "No markdown, no extra text.\n\n"
             f"SUMMARY_JSON = {json.dumps(summary, ensure_ascii=False)}"
         )
-        parsed_h, err_h = call_groq(prompt_h, json_mode=True) if groq_api_key else (None, "No GROQ_API_KEY")
+        parsed_h, err_h = call_llm(prompt_h, json_mode=True)
         highlights = []
         if isinstance(parsed_h, list):
             for item in parsed_h[:6]:
@@ -1056,7 +1042,7 @@ def report():
                  "insight":"Cut caffeine after 14:00 and try 5-min breathing pre-bed."},
             ]
 
-        # 3) Sleep analysis text (local build like /sleep-analysis)
+        # 3) Sleep analysis text
         def _build_sleep_analysis_text(current_obj):
             try:
                 quantitative_keys = ['TST', 'TIB', 'SE', 'SOL', 'WASO', 'AHI', 'sleep_efficiency']
@@ -1093,7 +1079,7 @@ def report():
                         "Personalized Recommendations\n\n"
                         f"Symptoms: {', '.join(symptoms)}"
                     )
-                txt, er = call_groq(prompt, json_mode=False)
+                txt, er = call_llm(prompt, json_mode=False)
                 return txt or ""
             except Exception:
                 return ""
@@ -1165,13 +1151,7 @@ def report():
         }
 
         level = "Low Risk" if score >= 75 else ("Moderate Risk" if score >= 55 else "High Risk")
-        riskAssessment = {
-            "title": "Risk Assessment",
-            "score": score,
-            "level": level,
-            "advice": advice,
-            "components": comp
-        }
+        riskAssessment = {"title": "Risk Assessment","score": score,"level": level,"advice": advice,"components": comp}
 
         morning = [
             "Hydrate on wake; natural light for 10–15 min.",
@@ -1219,7 +1199,6 @@ def report():
             ])
         whatIfScenarios = {"title":"What-If Scenarios","scenarios": whatIf}
 
-        # ------ Build final response and add legacy shim ------
         resp = {
             "executiveSummary": executiveSummary,
             "riskAssessment": riskAssessment,
@@ -1244,7 +1223,9 @@ def health_check():
     status = {
         "status": "ok",
         "services": {
-            "groq": "available" if groq_api_key else "missing_api_key",
+            "llm_provider": LLM_PROVIDER,
+            "model": LLM_MODEL,
+            "groq_key": "present" if bool(groq_api_key) else "absent",
             "pixabay": "available" if pixabay_api_key else "missing_api_key"
         },
         "endpoints": [
@@ -1268,11 +1249,9 @@ def health_check():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
-    logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode")
+    logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | "
+                f"LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
-
-
 
 
 

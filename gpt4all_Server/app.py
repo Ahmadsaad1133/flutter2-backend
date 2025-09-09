@@ -131,9 +131,9 @@ def call_llm(
     - LLM_PROVIDER=gpt4all (default) -> http://localhost:4891/v1/chat/completions
     - LLM_PROVIDER=groq             -> https://api.groq.com/openai/v1/chat/completions
     """
-    try:
-         messages = [{"role": "system", "content": system_msg}]
-        if json_mode:
+    try:␊
+        messages = [{"role": "system", "content": system_msg}]
+        if json_mode:␊
             user_msg = (
                 user_prompt.rstrip()
                 + "\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
@@ -1313,6 +1313,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

@@ -191,7 +191,7 @@ def build_sections_from_analysis(analysis: dict) -> list:
         ("Causal Graph", "causal_graph", "sec-causal"),
         ("Energy Timeline", "energy_timeline", "sec-energy-timeline"),
         ("Next Day Forecast", "next_day_forecast", "sec-next"),
-        ("What‑If Scenarios", "what_if_scenarios", "sec-whatif"),
+        ("What-If Scenarios", "what_if_scenarios", "sec-whatif"),
     ]:
         S.append(_mk_section(title, _get_any(analysis, key), key=key, prefer="kv", anchor_id=anchor))
     return [s for s in S if s]
@@ -207,7 +207,7 @@ def _call_groq_summary(analysis: dict) -> str | None:
             "max_tokens": 700,
             "messages": [
                 {"role": "system", "content":
-                 "You are a careful sleep coach and clinician. Summarize the user's sleep **strictly** from the given JSON. "
+                 "You are a careful sleep coach and clinician. Summarize the user's sleep strictly from the given JSON. "
                  "Do not invent numbers. Be concise and structured (bullets). Include: Overall quality, Key drivers (2-4), "
                  "Risks/flags, and 3 personalized, actionable recommendations. Tone: supportive and practical."},
                 {"role": "user", "content": json.dumps(analysis, ensure_ascii=False)}
@@ -336,9 +336,9 @@ def api_sleep_report():
     }
     """
     try:
-        data = request.get_json(force=True, silent=False) or {}
+      data = request.get_json(force=True, silent=False) or {}
     except Exception as e:
-        return jsonify({"error": f"Invalid JSON: {e}"}), 400
+      return jsonify({"error": f"Invalid JSON: {e}"}), 400
 
     title = data.get("title") or "Sleep Analysis Report"
     subtitle = data.get("subtitle") or "Sleep Moon · AI Insights"
@@ -350,7 +350,7 @@ def api_sleep_report():
     # Build sections from analysis
     sections = build_sections_from_analysis(analysis)
 
-    # Append any image sections from client
+    # Append any image/extra sections from client
     for s in incoming_sections:
         if not isinstance(s, dict):
             continue
@@ -359,19 +359,26 @@ def api_sleep_report():
         caption = s.get("caption")
         html = s.get("html")
         body = s.get("body")
-        if not html and body is not None:
-            html, _ = _format_value_html(body, prefer="auto")
-        sec = _mk_section(title_s, value=None, image=image, anchor_id=None)
+        sec = None
+        if html or body is not None:
+            if not html and body is not None:
+                html, _ = _format_value_html(body, prefer="auto")
+            sec = _mk_section(title_s, value=None, image=image, anchor_id=None)
+            if sec:
+                sec["html"] = html or ""
+        else:
+            sec = _mk_section(title_s, value=None, image=image, anchor_id=None)
+
         if sec and caption:
             sec["caption"] = caption
-        sections.append(sec)
+        if sec:
+            sections.append(sec)
 
     # AI Summary (optional)
     ai_summary_html = None
     if want_ai:
         ai_txt = _call_groq_summary(analysis)
         if ai_txt:
-            # Convert plain lines to paragraphs / bullets
             ai_summary_html, _ = _format_value_html(ai_txt, prefer="p")
 
     # Render

@@ -306,7 +306,8 @@ def _groq_doctor_struct(user_payload: dict) -> dict:
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     body = {"model": GROQ_MODEL, "messages": [{"role": "system", "content": sys_prompt}, user_prompt], "temperature": 0.2}
 
-    r = requests.post(GROQ_URL, headers=headers, data=json.dumps(body), timeout=60)
+    r = requests.post(GROQ_URL, headers=headers, json=body, timeout=60)
+
     r.raise_for_status()
     data = r.json()
     content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")

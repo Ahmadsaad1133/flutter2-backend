@@ -22,9 +22,23 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
 GROQ_URL     = os.getenv("GROQ_URL",   "https://api.groq.com/openai/v1/chat/completions")
 
-# ----------------------------- Utilities -----------------------------
+# ----------------------------- Small utils -----------------------------
 def _now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+def _num(x, default=0.0):
+    try:
+        if x is None: return float(default)
+        return float(str(x))
+    except Exception:
+        return float(default)
+
+def _clamp(v, lo, hi):
+    try:
+        v = float(v)
+    except Exception:
+        return lo
+    return max(lo, min(hi, v))
 
 def _is_jsonish(s: str) -> bool:
     sx = s.strip()
@@ -45,7 +59,6 @@ def _clean_text(txt: Any) -> str:
         try:
             parsed = json.loads(s)
             if isinstance(parsed, dict):
-                # Shallow "k: v" join
                 parts = []
                 for k, v in parsed.items():
                     if isinstance(v, (dict, list)):
@@ -132,8 +145,7 @@ def _svg_bar_chart(title: str, series: List[Dict[str, Any]], width: int = 700, h
         y = y0 + gy * (chart_h/4)
         grid.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+chart_w}" y2="{y:.1f}" stroke="#ddd" stroke-dasharray="3,3" />')
     title_el = f'<text x="{width/2:.1f}" y="{padding+8:.1f}" font-size="14" font-weight="600" text-anchor="middle">{_escape(title)}</text>'
-    return f"""
-    <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+    return f"""    <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="#2C7BE5"/><stop offset="100%" stop-color="#6C63FF"/>
@@ -152,14 +164,14 @@ def _svg_donut_chart(title: str, items: List[Dict[str, Any]], width: int = 260, 
     start_angle = -90
     arcs, legend = [], []
     colors = ["#2C7BE5","#6C63FF","#00C9A7","#F7B924","#FF6F61","#A78BFA","#22D3EE"]
+    import math
     for idx, item in enumerate(items):
         val = float(item.get("value", 0) or 0)
         pct = val / total
         ang = pct * 360.0
         end_angle = start_angle + ang
         large_arc = 1 if ang > 180 else 0
-        import math
-        def pt(a): 
+        def pt(a):
             rad = math.radians(a); return cx + r*math.cos(rad), cy + r*math.sin(rad)
         x1,y1 = pt(start_angle); x2,y2 = pt(end_angle)
         color = colors[idx % len(colors)]
@@ -168,8 +180,7 @@ def _svg_donut_chart(title: str, items: List[Dict[str, Any]], width: int = 260, 
         start_angle = end_angle
     title_el = f'<div style="text-align:center;font-size:14px;font-weight:600;margin-bottom:8px">{_escape(title)}</div>'
     center_text = f'<text x="{cx:.1f}" y="{cy+5:.1f}" font-size="14" text-anchor="middle" fill="#333">100%</text>'
-    return f"""
-    <div style="display:flex;gap:16px;align-items:center;justify-content:center;">
+    return f"""    <div style="display:flex;gap:16px;align-items:center;justify-content:center;">
       <div>
         {title_el}
         <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
@@ -198,8 +209,7 @@ def _svg_line_chart(title: str, series: List[Dict[str, Any]], width: int = 700, 
     labels = [f'<text x="{pts[i][0]:.1f}" y="{y0 + chart_h + 16:.1f}" font-size="10" text-anchor="middle">{_escape(str(s.get("label","")))}</text>' for i, s in enumerate(series)]
     grid = [f'<line x1="{x0}" y1="{y0 + gy*(chart_h/4):.1f}" x2="{x0+chart_w}" y2="{y0 + gy*(chart_h/4):.1f}" stroke="#ddd" stroke-dasharray="3,3" />' for gy in range(5)]
     title_el = f'<text x="{width/2:.1f}" y="{padding-2:.1f}" font-size="14" font-weight="600" text-anchor="middle">{_escape(title)}</text>'
-    return f"""
-    <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+    return f"""    <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <linearGradient id="gl" x1="0" y1="0" x2="1" y2="0">
           <stop offset="0%" stop-color="#00C9A7"/><stop offset="100%" stop-color="#6C63FF"/>
@@ -212,98 +222,193 @@ def _svg_line_chart(title: str, series: List[Dict[str, Any]], width: int = 700, 
       <g fill="#333">{''.join(labels)}</g>
     </svg>"""
 
-# ----------------------------- Risk helpers -----------------------------
+# ----------------------------- Risk badge -----------------------------
 def _risk_badge(level: str) -> str:
     lv = (level or "").lower()
     if "high" in lv:    return '<span class="pill pill-high">High Risk</span>'
     if "moderate" in lv:return '<span class="pill pill-mod">Moderate Risk</span>'
     return '<span class="pill pill-low">Low Risk</span>'
 
-# ----------------------------- Groq LLM (Doctor Report) -----------------------------
+# ----------------------------- Fallback: rule-based doctor report -----------------------------
+def _doctor_fallback(user_payload: dict) -> dict:
+    meta = {
+        "generated_at": _now_iso(),
+        "model": os.getenv("GROQ_MODEL", "fallback-rule-based"),
+        "title": user_payload.get("title") or "Sleep Doctor Report",
+        "subtitle": user_payload.get("subtitle") or "AI-assisted clinical summary",
+        "patient": user_payload.get("patient") or {},
+    }
+
+    metrics = dict(user_payload.get("metrics") or {})
+    cur = user_payload.get("current") or {}
+    def pick(*keys):
+        for k in keys:
+            if isinstance(k, (list, tuple)):
+                node = cur; ok = True
+                for seg in k:
+                    if isinstance(node, dict) and seg in node:
+                        node = node[seg]
+                    else:
+                        ok = False; break
+                if ok: return node
+        return None
+
+    metrics.setdefault("TST",  _num(cur.get("duration_minutes") or cur.get("durationMinutes") or cur.get("totalSleepMinutes") or pick(["metrics","durationMinutes"]) , 0))
+    metrics.setdefault("TIB",  _num(cur.get("time_in_bed_minutes") or cur.get("timeInBedMinutes"), 0))
+    if "SE" not in metrics and metrics.get("TST",0) and metrics.get("TIB",0):
+        metrics["SE"] = round((metrics["TST"] / max(1, metrics["TIB"])) * 100, 1)
+    metrics.setdefault("SOL",  _num(cur.get("latency_minutes") or cur.get("latencyMinutes"), 0))
+    metrics.setdefault("WASO", _num(cur.get("waso_minutes") or cur.get("WASO") or 0))
+    metrics.setdefault("AHI",  _num(cur.get("AHI") or 0))
+    metrics.setdefault("deep",  _num(cur.get("deep_sleep_minutes") or cur.get("deepSleepMinutes") or (cur.get("stages") or {}).get("deepMinutes"), 0))
+    metrics.setdefault("rem",   _num(cur.get("rem_sleep_minutes") or cur.get("remSleepMinutes") or (cur.get("stages") or {}).get("remMinutes"), 0))
+    metrics.setdefault("light", _num(cur.get("light_sleep_minutes") or cur.get("lightSleepMinutes") or (cur.get("stages") or {}).get("lightMinutes"), 0))
+    metrics.setdefault("awake", _num((cur.get("stages") or {}).get("awakeMinutes") or 0))
+
+    duration_m = _num(metrics.get("TST"), 0)
+    tib_m      = _num(metrics.get("TIB"), 0)
+    se         = _num(metrics.get("SE"), 0) if metrics.get("SE") is not None else (duration_m / max(1, tib_m))*100
+    quality    = _num(cur.get("quality") or cur.get("sleepQuality"), 0)
+    stress10   = _clamp(_num(cur.get("stress_level") or cur.get("stressLevel"), 0), 0, 10)
+    caffeine   = _clamp(_num(cur.get("caffeine_intake") or cur.get("caffeineIntake"), 0), 0, 600)
+    exercise   = _clamp(_num(cur.get("exercise_minutes") or cur.get("exerciseMinutes"), 0), 0, 180)
+
+    comp = {
+        "duration":  _clamp((duration_m / 480.0) * 100.0, 0, 100),
+        "quality":   _clamp((quality / 10.0) * 100.0, 0, 100),
+        "efficiency":_clamp(se, 0, 100),
+        "stress":    _clamp(100.0 - (stress10 * 10.0), 0, 100),
+        "caffeine":  _clamp(100.0 - (caffeine / 6.0), 0, 100),
+        "exercise":  _clamp(min(exercise, 60) / 60.0 * 100.0, 0, 100),
+    }
+    risk_score = round(
+        0.32*comp["duration"] + 0.20*comp["quality"] + 0.18*comp["efficiency"] +
+        0.12*comp["stress"] + 0.08*comp["caffeine"] + 0.10*comp["exercise"], 1
+    )
+    level = "Low Risk" if risk_score >= 75 else ("Moderate Risk" if risk_score >= 55 else "High Risk")
+
+    bullets = []
+    if duration_m: bullets.append(f"Total Sleep Time ≈ {int(duration_m)} min")
+    if se:         bullets.append(f"Sleep Efficiency ≈ {round(se,1)}%")
+    if metrics.get("SOL"):  bullets.append(f"Sleep Latency ≈ {int(metrics['SOL'])} min")
+    if metrics.get("WASO"): bullets.append(f"WASO ≈ {int(metrics['WASO'])} min")
+
+    notes = _clean_text(user_payload.get("analysis") or
+                        user_payload.get("overview") or
+                        "No narrative provided. Focus on consistent schedule, light exposure in the morning, and screen reduction before bed.")
+
+    plan = {
+        "morning":   ["Natural light 10–15 min after wake", "Hydration and light mobility (5–10 min)"],
+        "afternoon": ["Keep caffeine <200mg after 14:00", "10–20 min walk or easy cardio"],
+        "evening":   ["Wind-down 45–60 min pre-bed (dim lights, low screens)", "Cool, dark, quiet bedroom"]
+    }
+    if risk_score < 55:
+        plan["evening"].append("Short nap 10–20 min before 15:00 if needed")
+
+    wake = cur.get("wakeTime") or cur.get("wake_time")
+    bed  = cur.get("bedTime")  or cur.get("bed_time") or cur.get("bedtime")
+    def add_minutes(hhmm, minutes):
+        try:
+            h, m = str(hhmm).split(":")
+            total = (int(h)*60 + int(m) + int(minutes)) % (24*60)
+            return f"{total//60:02d}:{total%60:02d}"
+        except Exception:
+            return hhmm
+    windows = []
+    if isinstance(wake, str) and ":" in wake:
+        windows.append({"start": wake, "end": add_minutes(wake, 30), "why": "Maintain consistency (+30m)"})
+        windows.append({"start": add_minutes(wake, -30), "end": wake, "why": "Allow early start (−30m)"})
+    elif isinstance(bed, str) and ":" in bed:
+        target = add_minutes(bed, 7*60+30)
+        windows.append({"start": add_minutes(target, -15), "end": add_minutes(target, 15), "why": "Target ~7.5h"})
+    else:
+        windows.append({"start": "06:30", "end": "07:00", "why": "Default window"})
+
+    what_if = [
+        {"title":"Reduce screens 1h pre-bed","impact":"Likely positive","note":"Less blue light → better melatonin onset"},
+        {"title":"Move caffeine earlier","impact":"Reduces latency","note":"Aim no caffeine after 14:00"},
+    ]
+
+    return {
+        "meta": meta,
+        "executiveSummary": {"bullets": bullets or ["Maintain a stable sleep schedule and optimize sleep hygiene."]},
+        "risk": {"score": risk_score, "level": level, "rationale": "Computed from duration/quality/efficiency/stress/caffeine/exercise.", "components": comp},
+        "assessment": {"diagnoses": ["Insomnia (suspected)"] if se < 85 else [], "notes": notes},
+        "plan": plan,
+        "wakeWindows": {"windows": windows, "note": "Adjust by ≤30 min as needed."},
+        "whatIf": what_if,
+        "metrics": metrics,
+        "charts": user_payload.get("charts") or [],
+        "images": user_payload.get("images") or [],
+        "recommendations": user_payload.get("recommendations") or [],
+        "sections": user_payload.get("sections") or [],
+    }
+
+# ----------------------------- Groq doctor struct (resilient) -----------------------------
 def _groq_doctor_struct(user_payload: dict) -> dict:
-    """
-    Uses Groq to transform any of:
-      - raw text in `analysis`
-      - structured logs: `current`, `history`/`logs`
-      - simple fields: TST, TIB, SOL, WASO, AHI...
-    into a STRICT JSON doctor report schema this renderer consumes.
-    """
-    # If no key -> just map payload through minimal schema so template renders.
     if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not set")
+        return _doctor_fallback(user_payload)
 
-    # With key: ask Groq to do strict JSON doctor report
-    sys_prompt = (
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    system = (
         "You are Dr. Somnus, a board-certified sleep specialist. "
-        "Transform the user's payload (raw analysis, symptoms, and/or numeric sleep logs) "
-        "into a STRICT JSON doctor report with this schema (no markdown, no prose outside JSON):\n\n"
-        "{\n"
-        '  "meta": { "title": str, "subtitle": str, "generated_at": str(ISO), "model": str, '
-        '            "patient": { "name"?: str, "age"?: str|number, "sex"?: "M"|"F"|str } },\n'
-        '  "executiveSummary": { "bullets": [str, ...] },\n'
-        '  "risk": { "score": number(0-100), "level": "Low Risk"|"Moderate Risk"|"High Risk", "rationale": str, "components": {str:number} },\n'
-        '  "assessment": { "diagnoses": [str, ...], "notes": str },\n'
-        '  "plan": { "morning": [str,...], "afternoon": [str,...], "evening": [str,...], "medications"?: [str], "behavioral"?: [str] },\n'
-        '  "wakeWindows": { "windows": [ {"start": "HH:MM", "end": "HH:MM", "why": str}, ... ], "note": str },\n'
-        '  "whatIf": [ {"title": str, "impact": str, "note": str}, ... ],\n'
-        '  "metrics": { "TST"?: number(mins), "TIB"?: number(mins), "SE"?: number(0-100), "SOL"?: number(mins), '
-        '               "WASO"?: number(mins), "AHI"?: number, "deep"?: number(mins), "rem"?: number(mins), '
-        '               "light"?: number(mins), "awake"?: number(mins) },\n'
-        '  "charts": [ {"type":"bar"|"line"|"donut","title":str,"data":[{"label":str,"value":number}]}, ... ],\n'
-        '  "images": [ {"title": str, "url_or_data_uri": str}, ... ],\n'
-        '  "recommendations": [str,...],\n'
-        '  "sections": [ {"title": str, "body": str}, ... ]\n'
-        "}\n\n"
-        "Rules:\n"
-        "- Be concise and clinically sound. Use ICSD-3 terminology where applicable.\n"
-        "- If metrics allow, compute SE = (TST/TIB)*100 and include it.\n"
-        "- Set risk.level by score: <55 High, 55–74 Moderate, ≥75 Low. Include components map (0–100).\n"
-        "- Use clear bullets; avoid markdown symbols. Do NOT include extra keys.\n"
+        "Transform the user's payload into the STRICT JSON schema described below. "
+        "No markdown, no extra keys, no prose outside JSON.\n\n"
+        "{"
+        ' "meta":{"title":str,"subtitle":str,"generated_at":str(ISO),"model":str,"patient":{"name"?:str,"age"?:str|num,"sex"?:str}},'
+        ' "executiveSummary":{"bullets":[str]},'
+        ' "risk":{"score":number,"level":"Low Risk"|"Moderate Risk"|"High Risk","rationale":str,"components":{str:number}},'
+        ' "assessment":{"diagnoses":[str], "notes":str},'
+        ' "plan":{"morning":[str],"afternoon":[str],"evening":[str],"medications"?:[str],"behavioral"?:[str]},'
+        ' "wakeWindows":{"windows":[{"start":"HH:MM","end":"HH:MM","why":str}], "note":str},'
+        ' "whatIf":[{"title":str,"impact":str,"note":str}],'
+        ' "metrics":{"TST"?:num,"TIB"?:num,"SE"?:num,"SOL"?:num,"WASO"?:num,"AHI"?:num,"deep"?:num,"rem"?:num,"light"?:num,"awake"?:num},'
+        ' "charts":[{"type":"bar"|"line"|"donut","title":str,"data":[{"label":str,"value":num}]}],'
+        ' "images":[{"title":str,"url_or_data_uri":str}],'
+        ' "recommendations":[str], "sections":[{"title":str,"body":str}]'
+        "}"
     )
 
-     user_prompt = {
-        "role": "user",
-        "content": json.dumps(user_payload, ensure_ascii=False),
-    }
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "system", "content": sys_prompt}, user_prompt],
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
-    }
+    model_candidates = [GROQ_MODEL or "llama-3.1-70b-versatile", "llama-3.1-8b-instant"]
+    last_err_txt = None
+    for model in model_candidates:
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            r = requests.post(GROQ_URL, headers=headers, json=body, timeout=60)
+            if r.status_code != 200:
+                last_err_txt = f"Groq {r.status_code}: {r.text[:400]}"
+                continue
+            data = r.json()
+            content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+            parsed = json.loads(content)
+            parsed.setdefault("meta", {})
+            parsed["meta"].setdefault("generated_at", _now_iso())
+            parsed["meta"].setdefault("model", model)
+            for k, v in {
+                "executiveSummary":{"bullets":[]}, "risk":{"score":65,"level":"Moderate Risk","rationale":"","components":{}},
+                "assessment":{"diagnoses":[],"notes":""}, "plan":{"morning":[],"afternoon":[],"evening":[]},
+                "wakeWindows":{"windows":[],"note":""}, "whatIf":[], "metrics":{}, "charts":[], "images":[],
+                "recommendations":[], "sections":[]
+            }.items():
+                parsed.setdefault(k, v)
+            return parsed
+        except Exception as e:
+            last_err_txt = f"{type(e).__name__}: {str(e)}"
 
-    r = requests.post(GROQ_URL, headers=headers, json=body, timeout=60)
-
-    r.raise_for_status()
-    data = r.json()
-    content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-    # Parse JSON strictly
-    parsed = json.loads(content)
-
-    # Fill sane defaults
-    parsed.setdefault("meta", {})
-    parsed["meta"].setdefault("generated_at", _now_iso())
-    parsed["meta"].setdefault("model", GROQ_MODEL)
-    parsed.setdefault("executiveSummary", {"bullets": []})
-   parsed.setdefault(
-        "risk",
-        {"score": 65, "level": "Moderate Risk", "rationale": "", "components": {}},
-    )
-    parsed.setdefault("assessment", {"diagnoses": [], "notes": ""})
-    parsed.setdefault("plan", {"morning": [], "afternoon": [], "evening": []})
-    parsed.setdefault("wakeWindows", {"windows": [], "note": ""})
-    parsed.setdefault("whatIf", [])
-    parsed.setdefault("metrics", {})
-    parsed.setdefault("charts", [])
-    parsed.setdefault("images", [])
-    parsed.setdefault("recommendations", [])
-    parsed.setdefault("sections", [])
-
-    return parsed
+    try:
+        import logging
+        logging.getLogger("smart-pdf").error("Groq failed, using fallback: %s", last_err_txt)
+    except Exception:
+        pass
+    return _doctor_fallback(user_payload)
 
 # ----------------------------- CSS -----------------------------
 BASE_CSS = CSS(string='''
@@ -348,10 +453,8 @@ def _render_html(ctx: dict) -> str:
     patient  = meta.get("patient") or {}
     patient_line = " • ".join([_clean_text(f"{k}: {v}") for k, v in patient.items()]) if patient else ""
 
-    # Executive Summary
     bullets = [ _clean_text(b) for b in ((ctx.get("executiveSummary") or {}).get("bullets") or []) ]
 
-    # Risk
     risk = ctx.get("risk") or {}
     risk_score = risk.get("score") or 0
     risk_level = risk.get("level") or "Moderate Risk"
@@ -359,12 +462,10 @@ def _render_html(ctx: dict) -> str:
     risk_rat   = _clean_text(risk.get("rationale") or "")
     risk_comp  = risk.get("components") or {}
 
-    # Assessment
     assess = ctx.get("assessment") or {}
     diagnoses = [ _clean_text(d) for d in (assess.get("diagnoses") or []) ]
     notes     = _clean_text(assess.get("notes") or "")
 
-    # Plan
     plan = ctx.get("plan") or {}
     morning   = [ _clean_text(x) for x in (plan.get("morning") or []) ]
     afternoon = [ _clean_text(x) for x in (plan.get("afternoon") or []) ]
@@ -372,17 +473,13 @@ def _render_html(ctx: dict) -> str:
     meds      = [ _clean_text(x) for x in (plan.get("medications") or []) ]
     behav     = [ _clean_text(x) for x in (plan.get("behavioral") or []) ]
 
-    # Wake Windows
     ww = ctx.get("wakeWindows") or {}
     ww_windows = ww.get("windows") or []
     ww_note    = _clean_text(ww.get("note") or "")
 
-    # What-If
     what_if = ctx.get("whatIf") or []
 
-    # Metrics
     metrics = ctx.get("metrics") or {}
-    # Build a friendly grid (pick common keys if present)
     mkeys = [("TST","TST (min)"),("TIB","TIB (min)"),("SE","SE (%)"),("SOL","SOL (min)"),
              ("WASO","WASO (min)"),("AHI","AHI"),("deep","Deep (min)"),("rem","REM (min)"),
              ("light","Light (min)"),("awake","Awake (min)")]
@@ -392,7 +489,6 @@ def _render_html(ctx: dict) -> str:
             val = metrics.get(k)
             metric_cards.append(f'<div class="metric"><div class="label">{_escape(label)}</div><div class="value">{_escape(str(val))}</div></div>')
 
-    # Charts
     chart_blocks = []
     for ch in ctx.get("charts", []):
         ctype = (ch.get("type") or "").lower()
@@ -402,7 +498,6 @@ def _render_html(ctx: dict) -> str:
         elif ctype == "donut": chart_blocks.append(_svg_donut_chart(ttl, data))
         else:                chart_blocks.append(_svg_line_chart(ttl, data))
 
-    # Images
     image_blocks = []
     for img in ctx.get("images", []):
         src = img.get("url_or_data_uri")
@@ -412,23 +507,19 @@ def _render_html(ctx: dict) -> str:
             ttl = _escape(_clean_text(img.get("title","")))
             image_blocks.append(f'<div class="card"><div class="small" style="margin-bottom:6px">{ttl}</div><img class="img" src="{data_uri}"/></div>')
 
-    # Extra sections provided by user/LLM
     extra_secs = []
     for sec in ctx.get("sections", []):
         st = _escape(_clean_text(sec.get("title","Section")))
         sb = _escape(_clean_text(sec.get("body",""))).replace("\n","<br/>")
         extra_secs.append(f'<div class="card section"><div class="kicker">{st}</div><div style="margin-top:6px;font-size:13px;line-height:1.5">{sb}</div></div>')
 
-    # Recommendations (top-level)
     recs = [ _clean_text(r) for r in (ctx.get("recommendations") or []) ]
 
-    # Overview (if any)
     overview_txt = ""
     if ctx.get("assessment", {}).get("notes"):
         overview_txt = _escape_lines(_clean_text(ctx["assessment"]["notes"]))
 
-    # Build HTML
-    tpl = Template("""
+    tpl = Template('''
 <html>
   <body>
     <div class="hero">
@@ -572,7 +663,7 @@ def _render_html(ctx: dict) -> str:
     </div>
   </body>
 </html>
-""")
+''')
 
     html = tpl.render(
         title=title,
@@ -610,36 +701,11 @@ def _render_html(ctx: dict) -> str:
 # ----------------------------- HTTP Route -----------------------------
 @pdf_bp.route("/generate", methods=["POST"])
 def generate_pdf():
-    """
-    Send:
-    {
-      // You can pass raw user analysis/logs; set auto_groq:true to transform
-      "title": "Sleep Doctor Report",
-      "subtitle": "Sleep Moon • AI Insights",
-      "analysis": "raw text or bullets ...",    // optional
-      "current": {...}, "history": [...],       // optional logs
-      "metrics": {...}, "charts": [...],        // optional
-      "images": [...], "patient": {...},        // optional
-
-      // If you already prepared structured fields, you may pass them directly:
-      "executiveSummary": {"bullets":[...]}
-      "risk": {"score": 72, "level":"Moderate Risk", "rationale":"...", "components":{"efficiency":68,...}}
-      "assessment": {"diagnoses":[...], "notes":"..."}
-      "plan": {"morning":[...], "afternoon":[...], "evening":[...], "medications":[...], "behavioral":[...]}
-      "wakeWindows": {"windows":[{"start":"06:30","end":"07:00","why":"..."}], "note":"..."}
-      "whatIf": [{"title":"...","impact":"...","note":"..."}]
-      "recommendations":[...], "sections":[{"title":"...","body":"..."}],
-
-      "auto_groq": true,          // let the AI transform to doctor schema
-      "download_filename": "sleep_report.pdf"
-    }
-    """
     try:
         payload = request.get_json(force=True, silent=False) or {}
     except Exception:
         return jsonify({"ok": False, "error": "Invalid JSON payload"}), 400
 
-    # If user asked for AI doctor mode OR didn't provide core sections, engage Groq
     auto_groq = bool(payload.get("auto_groq")) or not any([
         payload.get("executiveSummary"),
         payload.get("assessment"),
@@ -650,7 +716,6 @@ def generate_pdf():
         if auto_groq:
             ctx = _groq_doctor_struct(payload)
         else:
-            # Accept as-is (but ensure meta)
             meta = {
                 "generated_at": _now_iso(),
                 "model": GROQ_MODEL,
@@ -661,17 +726,26 @@ def generate_pdf():
             ctx = dict(payload)
             ctx["meta"] = meta
     except Exception as e:
-        return jsonify({"ok": False, "error": f"GROQ request failed: {str(e)}"}), 500
+        import logging
+        logging.getLogger("smart-pdf").exception("Doctor struct build failed")
+        return jsonify({"ok": False, "error": f"GROQ build failed (using fallback): {e}"}), 500
 
-    html = _render_html(ctx)
+    try:
+        html = _render_html(ctx)
+    except Exception as e:
+        import logging
+        logging.getLogger("smart-pdf").exception("Render HTML failed. Context snapshot: %s", json.dumps(ctx, default=str)[:800])
+        return jsonify({"ok": False, "error": f"Render HTML failed: {e}"}), 500
 
     try:
         pdf_bytes = HTML(string=html, base_url=".").write_pdf(stylesheets=[BASE_CSS])
     except Exception as e:
-        return jsonify({"ok": False, "error": f"PDF render failed: {str(e)}"}), 500
+        import logging
+        logging.getLogger("smart-pdf").exception("PDF render failed")
+        return jsonify({"ok": False, "error": f"PDF render failed: {e}"}), 500
 
     filename = payload.get("download_filename") or (
-        (ctx.get("meta",{}).get("title","report")).lower().replace(" ","_") + ".pdf"
+        (ctx.get("meta",{}).get("title","report")).lower().replace(" ", "_") + ".pdf"
     )
     return send_file(BytesIO(pdf_bytes), as_attachment=True, download_name=filename, mimetype="application/pdf")
 
@@ -701,3 +775,4 @@ def doctor_demo():
     }
     with pdf_bp.test_request_context(json=demo):
         return generate_pdf()
+

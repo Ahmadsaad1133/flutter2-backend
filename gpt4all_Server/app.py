@@ -39,7 +39,7 @@ default_timeout = int(os.getenv("HTTP_TIMEOUT_SECONDS", "30"))
 # Choose between:
 #   - gpt4all  -> local server (OpenAI-compatible)
 #   - groq     -> Groq OpenAI-compatible API
-LLM_PROVIDER = (os.getenv("LLM_PROVIDER") or "gpt4all").strip().lower()
+LLM_PROVIDER = (os.getenv("LLM_PROVIDER") or "groq").strip().lower()
 
 # Base URLs
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -129,21 +129,20 @@ def call_llm(
 ):
     """
     Calls either GPT4All local server or Groq (OpenAI-compatible) based on env.
-    - LLM_PROVIDER=gpt4all (default) -> http://localhost:4891/v1/chat/completions
-    - LLM_PROVIDER=groq             -> https://api.groq.com/openai/v1/chat/completions
+
+    - LLM_PROVIDER=gpt4all -> http://localhost:4891/v1/chat/completions
+    - LLM_PROVIDER=groq    -> https://api.groq.com/openai/v1/chat/completions
+
+    If provider is 'gpt4all' and the request fails, and GROQ_API_KEY is present,
+    we automatically retry once with Groq.
     """
     try:
         # ---------- Build messages ----------
         messages = [{"role": "system", "content": system_msg}]
-
         if json_mode:
-            user_msg = (
-                user_prompt.rstrip()
-                + "\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
-            )
+            user_msg = user_prompt.rstrip() + "\nReturn ONLY JSON. No prose, no markdown, no headings, no backticks."
         else:
             user_msg = user_prompt
-
         messages.append({"role": "user", "content": user_msg})
 
         # ---------- Build payload ----------
@@ -153,45 +152,63 @@ def call_llm(
             "temperature": float(temperature),
             "max_tokens": int(max_tokens),
         }
-
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        # ---------- Choose provider ----------
+        # ---------- Provider candidates (with failover) ----------
+        candidates = []
         if LLM_PROVIDER == "groq":
             if not groq_api_key:
                 return None, "Missing GROQ_API_KEY"
-            url = GROQ_CHAT_URL
-            headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
+            candidates.append(("groq", "https://api.groq.com/openai/v1/chat/completions",
+                               {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
+        elif LLM_PROVIDER == "gpt4all":
+            candidates.append(("gpt4all", f"{(os.getenv('LLM_BASE_URL') or 'http://localhost:4891/v1').rstrip('/')}/chat/completions",
+                               {"Content-Type": "application/json"}))
+            if groq_api_key:
+                candidates.append(("groq", "https://api.groq.com/openai/v1/chat/completions",
+                                   {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
         else:
-            url = GPT4ALL_CHAT_URL
-            headers = {"Content-Type": "application/json"}
+            # Unknown value: try groq (if key) then gpt4all
+            if groq_api_key:
+                candidates.append(("groq", "https://api.groq.com/openai/v1/chat/completions",
+                                   {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
+            candidates.append(("gpt4all", f"{(os.getenv('LLM_BASE_URL') or 'http://localhost:4891/v1').rstrip('/')}/chat/completions",
+                               {"Content-Type": "application/json"}))
 
-        # ---------- Call API ----------
-        res = requests.post(url, headers=headers, json=payload, timeout=default_timeout)
-        if res.status_code != 200:
-            return None, f"LLM error: {res.status_code} - {res.text[:300]}"
+        errors = []
+        for name, url, headers in candidates:
+            try:
+                res = requests.post(url, headers=headers, json=payload, timeout=default_timeout)
+            except Exception as e:
+                errors.append(f"{name} exception: {e}")
+                continue
 
-        data = res.json()
-        content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
-        if not content:
-            return None, "Empty response from LLM"
+            if res.status_code != 200:
+                errors.append(f"{name} HTTP {res.status_code}: {res.text[:300]}")
+                continue
 
-        if json_mode:
-            parsed = extract_json_block(content)
-            if parsed is None:
+            data = res.json()
+            content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+            if not content:
+                errors.append(f"{name} empty content")
+                continue
+
+            if json_mode:
                 try:
-                    parsed = json.loads(content)
+                    parsed = extract_json_block(content) or json.loads(content)
                 except Exception:
-                    return None, "LLM did not return JSON"
-            return parsed, None
+                    errors.append(f"{name} non-JSON content")
+                    continue
+                return parsed, None
 
-        return sanitize_plain_text(content.strip()), None
+            return sanitize_plain_text(content.strip()), None
+
+        tip = " Tip: on Render, set LLM_PROVIDER=groq and add GROQ_API_KEY." if any(c[0] == "gpt4all" for c in candidates) else ""
+        return None, ("; ".join(errors) or "Unknown LLM error") + tip
 
     except Exception as e:
         return None, f"LLM call failed: {str(e)}"
-
-
 
 
         if LLM_PROVIDER == "groq":
@@ -1357,6 +1374,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

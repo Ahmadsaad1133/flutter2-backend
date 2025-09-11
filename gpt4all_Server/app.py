@@ -811,7 +811,11 @@ def readiness():
             0.10 * comp["exercise"]
         )
         score = round(_clamp(score, 0, 100), 1)
-        advice = "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." if score >= 75 else \                 "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." if score >= 55 else \                 "Take it easy today. Short naps, hydration, and gentle movement recommended."
+        advice = ("Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." 
+          if score >= 75 else 
+          "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." 
+          if score >= 55 else 
+          "Take it easy today. Short naps, hydration, and gentle movement recommended.")
         return jsonify({"score": score, "components": comp, "advice": advice})
     except Exception as e:
         logger.error("/readiness failed", exc_info=True)
@@ -1209,7 +1213,11 @@ def report():
             0.10 * comp["exercise"]
         )
         score = round(_clamp(score, 0, 100), 1)
-        advice = "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." if score >= 75 else \                 "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." if score >= 55 else \                 "Take it easy today. Short naps, hydration, and gentle movement recommended."
+        advice = ("Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." 
+          if score >= 75 else 
+          "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." 
+          if score >= 55 else 
+          "Take it easy today. Short naps, hydration, and gentle movement recommended.")
         readiness_obj = {"score": score, "components": comp, "advice": advice}
 
         # ---------- Compose sections ----------
@@ -1345,15 +1353,6 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
-
-
-
-
-
-
-
-
 
 
 

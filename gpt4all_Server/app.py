@@ -87,6 +87,22 @@ def sanitize_plain_text(text: str) -> str:
     # Trim excessive blank lines
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
+def _clean_llm_analysis_output(txt: str) -> str:
+    """
+    Remove any echoed instructions from the model and keep the user's analysis.
+    Targets lines like "You are Dr. Somnus..." or "Sections:" that sometimes get echoed.
+    """
+    t = sanitize_plain_text(txt or "")
+    # Drop a leading instruction paragraph that starts with "You are ..."
+    t = re.sub(r'(?is)^\s*you are [^\n]+?\n\s*', '', t, count=1)
+    # Remove a "Sections:" header block if present
+    t = re.sub(r'(?ims)^\s*sections:\s*(?:.+\n)+\s*', '', t, count=1)
+    # Normalize common headings if present (keep the content)
+    t = re.sub(r'(?im)^\s*(symptom analysis|clinical assessment|treatment recommendations)\s*:?\s*$', r'\1:', t)
+    # Trim any excessive blank lines
+    t = re.sub(r'\n{3,}', '\n\n', t).strip()
+    return t
+
 
 def extract_json_block(text):
     """Extract the first top-level JSON object/array in text and parse it. Returns Python obj or None."""
@@ -1165,10 +1181,17 @@ def report():
                         f"Symptoms: {', '.join(symptoms)}"
                     )
                 txt, er = call_llm(prompt, json_mode=False)
-                return txt or ""
+                return _clean_llm_analysis_output(txt) if txt else ""
             except Exception:
                 return ""
         analysisText = _build_sleep_analysis_text(current)
+        if not analysisText:
+            # Fallback summary so widgets always have content
+            approx_duration = int(duration) if 'duration' in locals() else 0
+            analysisText = (
+                f"Overview: Readiness {score}/100 ({'Low Risk' if score>=75 else 'Moderate Risk' if score>=55 else 'High Risk'}). "
+                f"Estimated sleep duration ~{approx_duration} min. {advice}"
+            )
 
         # 4) Readiness (same logic as /readiness)
         log = current if isinstance(current, dict) else {}
@@ -1236,6 +1259,7 @@ def report():
         executiveSummary = {
             "title": "Executive Summary",
             "bullets": bullets,
+            "fullText": sanitize_plain_text(analysisText) if analysisText else "",
             "text": sanitize_plain_text(analysisText) if analysisText else "",
             "rawAnalysisPreview": (
                 sanitize_plain_text(analysisText)[:600] + "…"
@@ -1308,6 +1332,10 @@ def report():
             "wakeWindows": wakeWindows,
             "whatIfScenarios": whatIfScenarios,
             "lifestyleCorrelations": lifestyleCorrelations
+        ,
+            "summary": executiveSummary.get("text",""),
+            "analysisText": executiveSummary.get("text",""),
+            "fullAnalysis": executiveSummary.get("text","")
         }
 
         resp.update(_legacy_report_shim(resp))
@@ -1353,7 +1381,6 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
 
 
 

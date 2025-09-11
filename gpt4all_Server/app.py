@@ -89,17 +89,22 @@ def sanitize_plain_text(text: str) -> str:
     return t.strip()
 def _clean_llm_analysis_output(txt: str) -> str:
     """
-    Remove any echoed instructions from the model and keep the user's analysis.
-    Targets lines like "You are Dr. Somnus..." or "Sections:" that sometimes get echoed.
+    Remove echoed instructions and any requests for more info. Keep only analysis.
     """
     t = sanitize_plain_text(txt or "")
-    # Drop a leading instruction paragraph that starts with "You are ..."
+    # Drop initial 'You are ...' instruction paragraph
     t = re.sub(r'(?is)^\s*you are [^\n]+?\n\s*', '', t, count=1)
-    # Remove a "Sections:" header block if present
+    # Remove 'Sections:' header block if present
     t = re.sub(r'(?ims)^\s*sections:\s*(?:.+\n)+\s*', '', t, count=1)
-    # Normalize common headings if present (keep the content)
-    t = re.sub(r'(?im)^\s*(symptom analysis|clinical assessment|treatment recommendations)\s*:?\s*$', r'\1:', t)
-    # Trim any excessive blank lines
+    # Remove any paragraphs asking for more data
+    t = re.sub(r'(?is)^\s*please provide[\s\S]*?(?:\n\s*\n|$)', '', t)
+    t = re.sub(r'(?is)^\s*i need more (?:context|information)[\s\S]*?(?:\n\s*\n|$)', '', t)
+    t = re.sub(r'(?is)^\s*once i have this information[\s\S]*?(?:\n\s*\n|$)', '', t)
+    # Remove trailing enumerations about what *I can do*
+    t = re.sub(r'(?ims)^\s*(?:once i have|i can)[:\s][\s\S]*?(?:\n\s*\n|$)', '', t)
+    # Normalize section headings if present
+    t = re.sub(r'(?im)^\s*(symptom analysis|clinical assessment|treatment recommendations)\s*:?', r'\1:', t)
+    # Trim excessive blank lines
     t = re.sub(r'\n{3,}', '\n\n', t).strip()
     return t
 
@@ -1381,7 +1386,6 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
 
 
 

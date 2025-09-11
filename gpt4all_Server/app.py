@@ -66,10 +66,10 @@ def extract_text(value):
         return json.dumps(value, ensure_ascii=False)
     return str(value) if value is not None else ""
 
-_MD_CODE_FENCE = re.compile(r"""```(?:[\w-]+)?\n([\s\S]*?)```""", re.MULTILINE)
-_MD_HEADING = re.compile(r"""^\s{0,3}#{1,6}\s*""", re.MULTILINE)
-_MD_LIST_BULLET = re.compile(r"""^\s{0,3}[*\-•]\s*""", re.MULTILINE)
-_MD_QUOTE = re.compile(r"""^\s{0,3}>\s?""", re.MULTILINE)
+_MD_CODE_FENCE = re.compile(r"```(?:[\w-]+)?\n([\s\S]*?)```", re.MULTILINE)
+_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+_MD_LIST_BULLET = re.compile(r"^\s{0,3}[*\-•]\s*", re.MULTILINE)
+_MD_QUOTE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
 
 def sanitize_plain_text(text: str) -> str:
     """Turn any markdown-ish content into simple plain text."""
@@ -87,6 +87,7 @@ def sanitize_plain_text(text: str) -> str:
     # Trim excessive blank lines
     t = re.sub(r"\n{3,}", "\n\n", t)
     return t.strip()
+
 def _clean_llm_analysis_output(txt: str) -> str:
     """
     Remove echoed instructions and any requests for more info. Keep only analysis.
@@ -96,18 +97,32 @@ def _clean_llm_analysis_output(txt: str) -> str:
     t = re.sub(r'(?is)^\s*you are [^\n]+?\n\s*', '', t, count=1)
     # Remove 'Sections:' header block if present
     t = re.sub(r'(?ims)^\s*sections:\s*(?:.+\n)+\s*', '', t, count=1)
-    # Remove any paragraphs asking for more data
+    # Remove 'Please provide...' or similar request paragraphs
     t = re.sub(r'(?is)^\s*please provide[\s\S]*?(?:\n\s*\n|$)', '', t)
     t = re.sub(r'(?is)^\s*i need more (?:context|information)[\s\S]*?(?:\n\s*\n|$)', '', t)
     t = re.sub(r'(?is)^\s*once i have this information[\s\S]*?(?:\n\s*\n|$)', '', t)
-    # Remove trailing enumerations about what *I can do*
+    # Remove generic "insufficient information" preambles
+    t = re.sub(r'(?is)^\s*(unfortunately|however)[\s\S]*?(?:insufficient|lack of)\s+information[\s\S]*?(?:\n\s*\n|$)', '', t)
+    # Remove trailing enumerations about what *I can do* rather than analysis
     t = re.sub(r'(?ims)^\s*(?:once i have|i can)[:\s][\s\S]*?(?:\n\s*\n|$)', '', t)
-    # Normalize section headings if present
-    t = re.sub(r'(?im)^\s*(symptom analysis|clinical assessment|treatment recommendations)\s*:?', r'\1:', t)
+    # Normalize section headings if present (keep content)
+    t = re.sub(r'(?im)^\s*(symptom analysis|clinical assessment|treatment recommendations|personalized recommendations)\s*:?\s*$', r'\1:', t)
     # Trim excessive blank lines
     t = re.sub(r'\n{3,}', '\n\n', t).strip()
     return t
 
+def _is_weak_analysis(txt: str) -> bool:
+    if not txt:
+        return True
+    low = txt.lower()
+    triggers = [
+        "please provide", "need more information", "need more context",
+        "once i have this information", "insufficient information",
+        "cannot provide personalized recommendations", "general sleep hygiene tips"
+    ]
+    if any(t in low for t in triggers):
+        return True
+    return len(txt.strip()) < 140
 
 def extract_json_block(text):
     """Extract the first top-level JSON object/array in text and parse it. Returns Python obj or None."""
@@ -328,8 +343,8 @@ def _legacy_report_shim(resp):
     # ---------- Executive Summary ----------
     es = resp.get("executiveSummary") or {}
     es_bullets = es.get("bullets") or []
-    # PREFER FULL TEXT if available; fallback to preview
-    es_text = es.get("text") or es.get("rawAnalysisPreview") or ""
+    # Prefer full text if available; fallback to preview
+    es_text = es.get("text") or es.get("fullText") or es.get("rawAnalysisPreview") or ""
     if not es_text and es_bullets:
         es_text = "\n".join([str(b) for b in es_bullets if str(b).strip()])
     legacy["executive_summary"] = {
@@ -567,17 +582,16 @@ def sleep_analysis():
 
         if is_quantitative:
             prompt = (
-                "You are Dr. Somnus, a board-certified sleep specialist. Analyze this quantitative sleep data:\n\n"
-                "1. Calculate sleep efficiency: (TST / TIB) × 100 (if not provided)\n"
-                "2. Assess sleep continuity metrics\n"
-                "3. Compare against AASM clinical thresholds\n"
-                "4. Identify potential sleep disorders\n"
-                "5. Provide evidence-based recommendations\n\n"
-                "Sections:\n"
-                "Quantitative Analysis\n"
-                "Clinical Assessment\n"
-                "Treatment Recommendations\n\n"
-                f"Data: {json.dumps(sleep_data, ensure_ascii=False)}"
+                "You are Dr. Somnus, a board-certified sleep specialist. Analyze this quantitative sleep data.\n"
+                "Tasks:\n"
+                "1) Calculate sleep efficiency = (TST / TIB) × 100 (if not provided);\n"
+                "2) Assess sleep continuity metrics;\n"
+                "3) Compare against AASM clinical thresholds;\n"
+                "4) Identify potential sleep disorders;\n"
+                "5) Provide evidence-based recommendations.\n\n"
+                "Output: Write only your analysis (no requests for more data). "
+                "If data is missing, infer with clear assumptions.\n\n"
+                f"DATA_JSON = {json.dumps(sleep_data, ensure_ascii=False)}"
             )
         else:
             symptoms = sleep_data.get("symptoms", [])
@@ -587,21 +601,38 @@ def sleep_analysis():
                 return jsonify(error="No symptoms provided", code="SleepAnalysisException"), 400
             prompt = (
                 "You are Dr. Somnus, a board-certified sleep specialist. "
-                "Analyze these patient-reported symptoms:\n\n"
-                "1. Identify potential sleep disorders (ICSD-3)\n"
-                "2. Relate symptoms to physiological causes\n"
-                "3. Provide clinical recommendations\n\n"
-                "Sections:\n"
-                "Symptom Analysis\n"
-                "Clinical Assessment\n"
-                "Personalized Recommendations\n\n"
-                f"Symptoms: {', '.join(symptoms)}"
+                "Analyze these patient-reported symptoms.\n"
+                "Tasks:\n"
+                "1) Identify potential sleep disorders (ICSD-3);\n"
+                "2) Relate symptoms to physiological causes;\n"
+                "3) Provide clinical recommendations.\n\n"
+                "Output: Write only your analysis (no requests for more data). "
+                "If details are missing, infer with clear caveats.\n\n"
+                f"SYMPTOMS_TXT = {', '.join(symptoms)}"
             )
 
         text, err = call_llm(prompt, json_mode=False)
-        if err or not text:
-            return jsonify(error="Analysis service error", details=err or "empty"), 502
-        return jsonify(analysis=text)
+        cleaned = _clean_llm_analysis_output(text) if text else ""
+        if _is_weak_analysis(cleaned):
+            # Guard-rail: return a concise rule-based analysis instead of a meta request
+            se = None
+            try:
+                TST = float(sleep_data.get("TST", 0) or 0)
+                TIB = float(sleep_data.get("TIB", 0) or 0)
+                if TST > 0 and TIB > 0:
+                    se = round((TST / TIB) * 100, 1)
+            except Exception:
+                pass
+            recs = [
+                "Keep a stable wake time (±30m).",
+                "Avoid caffeine after 14:00 and dim screens 60m pre-bed.",
+                "Add 10–20m light activity; wind-down 45–60m."
+            ]
+            base = "Clinical Summary: Limited fields provided; giving best-effort guidance."
+            if se is not None:
+                base += f" Estimated sleep efficiency ≈ {se}%."
+            cleaned = base + " Recommendations: " + " ".join(recs)
+        return jsonify(analysis=cleaned)
     except Exception as e:
         logger.error("Sleep analysis failed", exc_info=True)
         return jsonify(error="Sleep analysis failed", details=str(e), code="SleepAnalysisException"), 500
@@ -832,103 +863,16 @@ def readiness():
             0.10 * comp["exercise"]
         )
         score = round(_clamp(score, 0, 100), 1)
-        advice = ("Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." 
-          if score >= 75 else 
-          "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." 
-          if score >= 55 else 
-          "Take it easy today. Short naps, hydration, and gentle movement recommended.")
+        advice = (
+            "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep."
+            if score >= 75 else
+            "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down."
+            if score >= 55 else
+            "Take it easy today. Short naps, hydration, and gentle movement recommended."
+        )
         return jsonify({"score": score, "components": comp, "advice": advice})
     except Exception as e:
         logger.error("/readiness failed", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
-# ---------- Lifestyle Correlations (standalone) ----------
-
-def _series_from_logs(logs, key_aliases):
-    series = []
-    for log in logs:
-        if not isinstance(log, dict):
-            series.append(0.0); continue
-        val = None
-        for k in key_aliases:
-            if isinstance(k, (list, tuple)):
-                cur = log; ok = True
-                for seg in k:
-                    if isinstance(cur, dict) and seg in cur: cur = cur[seg]
-                    else: ok = False; break
-                if ok: val = cur; break
-            else:
-                if k in log: val = log.get(k); break
-        series.append(_num_or_0(val))
-    return series
-
-def _pearson_corr(x, y):
-    if not x or not y or len(x) != len(y):
-        return 0.0, 0
-    n = len(x)
-    mean_x = sum(x) / n; mean_y = sum(y) / n
-    vx = sum((xi - mean_x) ** 2 for xi in x)
-    vy = sum((yi - mean_y) ** 2 for yi in y)
-    if vx == 0 or vy == 0:
-        return 0.0, n
-    cov = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
-    r = cov / (vx ** 0.5) / (vy ** 0.5)
-    if r != r: r = 0.0
-    r = max(-1.0, min(1.0, r))
-    return r, n
-
-@app.route("/lifestyle-correlations", methods=["POST"])
-def lifestyle_correlations():
-    try:
-        data = request.get_json(silent=True) or {}
-        logs = data.get("logs") or []
-        if not isinstance(logs, list) or len(logs) < 2:
-            return jsonify({"error": "Provide logs as an array with at least 2 entries"}), 400
-
-        lifestyle_keys = {
-            "caffeine_intake": ["caffeine_intake", "caffeineIntake"],
-            "exercise_minutes": ["exercise_minutes", "exerciseMinutes"],
-            "screen_time_before_bed": ["screen_time_before_bed", "screenTimeBeforeBed", "screen_time"],
-            "water_intake": ["water_intake", "waterIntake"],
-            "stress_level": ["stress_level", "stressLevel"],
-            "medications": ["medications", "meds_count", "meds"]
-        }
-        outcome_keys = {
-            "sleep_score": ["sleep_score", "sleepScore", "score", ["metrics","sleepScore"]],
-            "duration_minutes": ["duration_minutes", "durationMinutes", "totalSleepMinutes", "duration"],
-            "deep_sleep_minutes": ["deep_sleep_minutes", "deepSleepMinutes", ["stages","deepMinutes"]],
-            "rem_sleep_minutes": ["rem_sleep_minutes", "remSleepMinutes", ["stages","remMinutes"]],
-            "light_sleep_minutes": ["light_sleep_minutes", "lightSleepMinutes", ["stages","lightMinutes"]],
-            "efficiency": ["sleep_efficiency", "efficiency", "efficiencyScore", "sleepEfficiency"]
-        }
-        series_l = {k: _series_from_logs(logs, v) for k, v in lifestyle_keys.items()}
-        series_o = {k: _series_from_logs(logs, v) for k, v in outcome_keys.items()}
-
-        correlations = {}
-        pairs = []
-        for lk, x in series_l.items():
-            correlations[lk] = {}
-            for ok, y in series_o.items():
-                r, n = _pearson_corr(x, y)
-                correlations[lk][ok] = round(r, 3)
-                if abs(r) > 0:
-                    pairs.append((lk, ok, r))
-        positives = sorted([p for p in pairs if p[2] > 0], key=lambda p: p[2], reverse=True)[:5]
-        negatives = sorted([p for p in pairs if p[2] < 0], key=lambda p: p[2])[:5]
-        return jsonify({
-            "n": len(logs),
-            "method": "pearson",
-            "correlations": correlations,
-            "top_positive": [{"pair": f"{a} vs {b}", "r": round(r,3)} for a,b,r in positives],
-            "top_negative": [{"pair": f"{a} vs {b}", "r": round(r,3)} for a,b,r in negatives],
-            "caveats": [
-                "Correlations are associative, not causal.",
-                "At least 7–10 nights usually needed for stable signals.",
-                "Flat/constant series (no variance) produce r=0."
-            ]
-        }), 200
-    except Exception as e:
-        logger.error("/lifestyle-correlations failed", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 # ---------- Insights (used by client and /report) ----------
@@ -1148,57 +1092,7 @@ def report():
                  "insight":"Cut caffeine after 14:00 and try 5-min breathing pre-bed."},
             ]
 
-        # 3) Sleep analysis text (local build like /sleep-analysis)
-        def _build_sleep_analysis_text(current_obj):
-            try:
-                quantitative_keys = ['TST', 'TIB', 'SE', 'SOL', 'WASO', 'AHI', 'sleep_efficiency']
-                is_quant = any(k in current_obj for k in quantitative_keys)
-                if is_quant:
-                    prompt = (
-                        "You are Dr. Somnus, a board-certified sleep specialist. Analyze this quantitative sleep data:\n\n"
-                        "1. Calculate sleep efficiency: (TST / TIB) × 100 (if not provided)\n"
-                        "2. Assess sleep continuity metrics\n"
-                        "3. Compare against AASM clinical thresholds\n"
-                        "4. Identify potential sleep disorders\n"
-                        "5. Provide evidence-based recommendations\n\n"
-                        "Sections:\n"
-                        "Quantitative Analysis\n"
-                        "Clinical Assessment\n"
-                        "Treatment Recommendations\n\n"
-                        f"Data: {json.dumps(current_obj, ensure_ascii=False)}"
-                    )
-                else:
-                    symptoms = current_obj.get("symptoms", [])
-                    if not symptoms:
-                        symptoms = [str(v) for v in current_obj.values() if isinstance(v, (str, int, float))]
-                    if not symptoms:
-                        return ""
-                    prompt = (
-                        "You are Dr. Somnus, a board-certified sleep specialist. "
-                        "Analyze these patient-reported symptoms:\n\n"
-                        "1. Identify potential sleep disorders (ICSD-3)\n"
-                        "2. Relate symptoms to physiological causes\n"
-                        "3. Provide clinical recommendations\n\n"
-                        "Sections:\n"
-                        "Symptom Analysis\n"
-                        "Clinical Assessment\n"
-                        "Personalized Recommendations\n\n"
-                        f"Symptoms: {', '.join(symptoms)}"
-                    )
-                txt, er = call_llm(prompt, json_mode=False)
-                return _clean_llm_analysis_output(txt) if txt else ""
-            except Exception:
-                return ""
-        analysisText = _build_sleep_analysis_text(current)
-        if not analysisText:
-            # Fallback summary so widgets always have content
-            approx_duration = int(duration) if 'duration' in locals() else 0
-            analysisText = (
-                f"Overview: Readiness {score}/100 ({'Low Risk' if score>=75 else 'Moderate Risk' if score>=55 else 'High Risk'}). "
-                f"Estimated sleep duration ~{approx_duration} min. {advice}"
-            )
-
-        # 4) Readiness (same logic as /readiness)
+        # 3) Readiness FIRST (so we can synthesize analysis if needed)
         log = current if isinstance(current, dict) else {}
         duration = _num_or_0(log.get("duration_minutes") or log.get("durationMinutes"))
         if duration <= 0:
@@ -1241,12 +1135,63 @@ def report():
             0.10 * comp["exercise"]
         )
         score = round(_clamp(score, 0, 100), 1)
-        advice = ("Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." 
-          if score >= 75 else 
-          "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." 
-          if score >= 55 else 
-          "Take it easy today. Short naps, hydration, and gentle movement recommended.")
-        readiness_obj = {"score": score, "components": comp, "advice": advice}
+        advice = (
+            "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep."
+            if score >= 75 else
+            "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down."
+            if score >= 55 else
+            "Take it easy today. Short naps, hydration, and gentle movement recommended."
+        )
+        level = "Low Risk" if score >= 75 else ("Moderate Risk" if score >= 55 else "High Risk")
+
+        # 4) LLM analysis (after readiness), with constraints and cleaner
+        def _build_sleep_analysis_text(current_obj):
+            try:
+                quantitative_keys = ['TST', 'TIB', 'SE', 'SOL', 'WASO', 'AHI', 'sleep_efficiency']
+                is_quant = any(k in current_obj for k in quantitative_keys)
+                if is_quant:
+                    prompt = (
+                        "You are Dr. Somnus, a board-certified sleep specialist. Analyze this quantitative sleep data.\n"
+                        "Tasks: 1) Compute sleep efficiency if missing; 2) Assess continuity (SOL, WASO); "
+                        "3) Compare to AASM thresholds; 4) Identify possible disorders; 5) Give recommendations.\n"
+                        "Constraints: Write only analysis; do not ask for more data. If fields are missing, infer with assumptions.\n\n"
+                        f"DATA_JSON = {json.dumps(current_obj, ensure_ascii=False)}"
+                    )
+                else:
+                    symptoms = current_obj.get("symptoms", [])
+                    if not symptoms:
+                        symptoms = [str(v) for v in current_obj.values() if isinstance(v, (str, int, float))]
+                    if not symptoms:
+                        return ""
+                    prompt = (
+                        "You are Dr. Somnus, a board-certified sleep specialist. Analyze these reported symptoms.\n"
+                        "Tasks: 1) Likely ICSD-3 differentials; 2) Physiological links; 3) Actionable plan.\n"
+                        "Constraints: Write only analysis; do not ask for more data. If details are missing, infer with caveats.\n\n"
+                        f"SYMPTOMS_TXT = {', '.join(symptoms)}"
+                    )
+                txt, er = call_llm(prompt, json_mode=False)
+                return _clean_llm_analysis_output(txt) if txt else ""
+            except Exception:
+                return ""
+
+        analysisText = _build_sleep_analysis_text(current)
+
+        # Guard: if weak, synthesize a concrete clinical summary (never meta)
+        if _is_weak_analysis(analysisText):
+            dur_pct = round(comp.get('duration', 0))
+            eff_pct = round(comp.get('efficiency', 0))
+            stress_pct = round(comp.get('stress', 0))
+            caf_pct = round(comp.get('caffeine', 0))
+            ex_pct = round(comp.get('exercise', 0))
+            analysisText = (
+                f"Clinical Summary: Readiness {score}/100 ({level}). "
+                f"Key levers — duration {dur_pct}%, efficiency {eff_pct}%, stress {stress_pct}%. "
+                f"Caffeine {caf_pct}% of target, exercise {ex_pct}% of goal.\n\n"
+                "Recommendations:\n"
+                "• Keep a stable wake time (±30m) and target 7–8h asleep.\n"
+                "• Avoid caffeine after 14:00; reduce screens for 60m pre-bed.\n"
+                "• Add 10–20m light activity; wind-down 45–60m with dim light."
+            )
 
         # ---------- Compose sections ----------
         bullets = []
@@ -1260,21 +1205,19 @@ def report():
             lines = [l for l in sanitize_plain_text(analysisText).splitlines() if l.strip()]
             bullets.extend(lines[:3])
 
-        # IMPORTANT: Provide full text + preview (fix for UI clipping)
         executiveSummary = {
             "title": "Executive Summary",
             "bullets": bullets,
-            "fullText": sanitize_plain_text(analysisText) if analysisText else "",
-            "text": sanitize_plain_text(analysisText) if analysisText else "",
+            "fullText": sanitize_plain_text(analysisText),
+            "text": sanitize_plain_text(analysisText),
             "rawAnalysisPreview": (
                 sanitize_plain_text(analysisText)[:600] + "…"
                 if analysisText and len(analysisText) > 600
-                else (sanitize_plain_text(analysisText) or "")
+                else sanitize_plain_text(analysisText)
             ),
             "highlights": highlights,
         }
 
-        level = "Low Risk" if score >= 75 else ("Moderate Risk" if score >= 55 else "High Risk")
         riskAssessment = {
             "title": "Risk Assessment",
             "score": score,
@@ -1336,8 +1279,7 @@ def report():
             "energyPlan": energyPlan,
             "wakeWindows": wakeWindows,
             "whatIfScenarios": whatIfScenarios,
-            "lifestyleCorrelations": lifestyleCorrelations
-        ,
+            "lifestyleCorrelations": lifestyleCorrelations,
             "summary": executiveSummary.get("text",""),
             "analysisText": executiveSummary.get("text",""),
             "fullAnalysis": executiveSummary.get("text","")
@@ -1386,6 +1328,7 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
+
 
 
 

@@ -51,7 +51,6 @@ GPT4ALL_CHAT_URL = f"{GPT4ALL_BASE}/chat/completions"
 # Example Groq: "gemma2-9b-it"
 LLM_MODEL = (os.getenv("LLM_MODEL") or "gemma2-9b-it").strip()
 
-
 # Image search (optional)
 PIXABAY_SEARCH_URL = "https://pixabay.com/api/"
 
@@ -67,10 +66,10 @@ def extract_text(value):
         return json.dumps(value, ensure_ascii=False)
     return str(value) if value is not None else ""
 
-_MD_CODE_FENCE = re.compile(r"```(?:[\w-]+)?\n([\s\S]*?)```", re.MULTILINE)
-_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
-_MD_LIST_BULLET = re.compile(r"^\s{0,3}[*\-•]\s*", re.MULTILINE)
-_MD_QUOTE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
+_MD_CODE_FENCE = re.compile(r"""```(?:[\w-]+)?\n([\s\S]*?)```""", re.MULTILINE)
+_MD_HEADING = re.compile(r"""^\s{0,3}#{1,6}\s*""", re.MULTILINE)
+_MD_LIST_BULLET = re.compile(r"""^\s{0,3}[*\-•]\s*""", re.MULTILINE)
+_MD_QUOTE = re.compile(r"""^\s{0,3}>\s?""", re.MULTILINE)
 
 def sanitize_plain_text(text: str) -> str:
     """Turn any markdown-ish content into simple plain text."""
@@ -119,7 +118,6 @@ def clean_json_output(json_text):
         return {"raw": json_text}
 
 # ========== Provider-agnostic LLM caller ==========
-# ========== Provider-agnostic LLM caller ==========
 def call_llm(
     user_prompt,
     *,
@@ -161,21 +159,16 @@ def call_llm(
         if LLM_PROVIDER == "groq":
             if not groq_api_key:
                 return None, "Missing GROQ_API_KEY"
-            candidates.append(("groq", "https://api.groq.com/openai/v1/chat/completions",
-                               {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
+            candidates.append(("groq", GROQ_CHAT_URL, {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
         elif LLM_PROVIDER == "gpt4all":
-            candidates.append(("gpt4all", f"{(os.getenv('LLM_BASE_URL') or 'http://localhost:4891/v1').rstrip('/')}/chat/completions",
-                               {"Content-Type": "application/json"}))
+            candidates.append(("gpt4all", GPT4ALL_CHAT_URL, {"Content-Type": "application/json"}))
             if groq_api_key:
-                candidates.append(("groq", "https://api.groq.com/openai/v1/chat/completions",
-                                   {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
+                candidates.append(("groq", GROQ_CHAT_URL, {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
         else:
             # Unknown value: try groq (if key) then gpt4all
             if groq_api_key:
-                candidates.append(("groq", "https://api.groq.com/openai/v1/chat/completions",
-                                   {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
-            candidates.append(("gpt4all", f"{(os.getenv('LLM_BASE_URL') or 'http://localhost:4891/v1').rstrip('/')}/chat/completions",
-                               {"Content-Type": "application/json"}))
+                candidates.append(("groq", GROQ_CHAT_URL, {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}))
+            candidates.append(("gpt4all", GPT4ALL_CHAT_URL, {"Content-Type": "application/json"}))
 
         errors = []
         for name, url, headers in candidates:
@@ -207,39 +200,6 @@ def call_llm(
 
         tip = " Tip: on Render, set LLM_PROVIDER=groq and add GROQ_API_KEY." if any(c[0] == "gpt4all" for c in candidates) else ""
         return None, ("; ".join(errors) or "Unknown LLM error") + tip
-
-    except Exception as e:
-        return None, f"LLM call failed: {str(e)}"
-
-
-        if LLM_PROVIDER == "groq":
-            if not groq_api_key:
-                return None, "Missing GROQ_API_KEY"
-            url = GROQ_CHAT_URL
-            headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
-        else:
-            url = GPT4ALL_CHAT_URL
-            headers = {"Content-Type": "application/json"}
-
-        res = requests.post(url, headers=headers, json=payload, timeout=default_timeout)
-        if res.status_code != 200:
-            return None, f"LLM error: {res.status_code} - {res.text[:300]}"
-
-        data = res.json()
-        content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
-        if not content:
-            return None, "Empty response from LLM"
-
-        if json_mode:
-            parsed = extract_json_block(content)
-            if parsed is None:
-                try:
-                    parsed = json.loads(content)
-                except Exception:
-                    return None, "LLM did not return JSON"
-            return parsed, None
-
-        return sanitize_plain_text(content.strip()), None
 
     except Exception as e:
         return None, f"LLM call failed: {str(e)}"
@@ -347,7 +307,8 @@ def _legacy_report_shim(resp):
     # ---------- Executive Summary ----------
     es = resp.get("executiveSummary") or {}
     es_bullets = es.get("bullets") or []
-    es_text = es.get("rawAnalysisPreview") or ""
+    # PREFER FULL TEXT if available; fallback to preview
+    es_text = es.get("text") or es.get("rawAnalysisPreview") or ""
     if not es_text and es_bullets:
         es_text = "\n".join([str(b) for b in es_bullets if str(b).strip()])
     legacy["executive_summary"] = {
@@ -772,11 +733,12 @@ def ai_highlights():
         if isinstance(parsed, list):
             for item in parsed[:6]:
                 if not isinstance(item, dict): continue
-                title = extract_text(item.get("title","")).strip()[:60]
-                value = extract_text(item.get("value","")).strip()[:40]
+                title = extract_text(item.get("title",""))
+                value = extract_text(item.get("value",""))
                 change = extract_text(item.get("change","flat")).lower()
                 if change not in ("up","down","flat"): change = "flat"
-                insight = extract_text(item.get("insight","")).strip()[:160]
+                insight = extract_text(item.get("insight",""))
+                title = title.strip()[:60]; value = value.strip()[:40]; insight = insight.strip()[:160]
                 if title:
                     highlights.append({"title":title,"value":value,"change":change,"insight":insight})
         if not highlights:
@@ -849,7 +811,7 @@ def readiness():
             0.10 * comp["exercise"]
         )
         score = round(_clamp(score, 0, 100), 1)
-        advice = "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." if score >= 75 else                  "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." if score >= 55 else                  "Take it easy today. Short naps, hydration, and gentle movement recommended."
+        advice = "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." if score >= 75 else \                 "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." if score >= 55 else \                 "Take it easy today. Short naps, hydration, and gentle movement recommended."
         return jsonify({"score": score, "components": comp, "advice": advice})
     except Exception as e:
         logger.error("/readiness failed", exc_info=True)
@@ -1247,7 +1209,7 @@ def report():
             0.10 * comp["exercise"]
         )
         score = round(_clamp(score, 0, 100), 1)
-        advice = "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." if score >= 75 else                  "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." if score >= 55 else                  "Take it easy today. Short naps, hydration, and gentle movement recommended."
+        advice = "Solid recovery ahead. Keep caffeine <200mg after 14:00 and aim for 7–8h sleep." if score >= 75 else \                 "Moderate recovery. Prioritize 7.5h sleep, light cardio, and earlier wind-down." if score >= 55 else \                 "Take it easy today. Short naps, hydration, and gentle movement recommended."
         readiness_obj = {"score": score, "components": comp, "advice": advice}
 
         # ---------- Compose sections ----------
@@ -1261,10 +1223,18 @@ def report():
         if not bullets and analysisText:
             lines = [l for l in sanitize_plain_text(analysisText).splitlines() if l.strip()]
             bullets.extend(lines[:3])
+
+        # IMPORTANT: Provide full text + preview (fix for UI clipping)
         executiveSummary = {
             "title": "Executive Summary",
             "bullets": bullets,
-            "rawAnalysisPreview": (sanitize_plain_text(analysisText)[:600] + "…") if analysisText and len(analysisText) > 600 else (sanitize_plain_text(analysisText) or ""),
+            "text": sanitize_plain_text(analysisText) if analysisText else "",
+            "rawAnalysisPreview": (
+                sanitize_plain_text(analysisText)[:600] + "…"
+                if analysisText and len(analysisText) > 600
+                else (sanitize_plain_text(analysisText) or "")
+            ),
+            "highlights": highlights,
         }
 
         level = "Low Risk" if score >= 75 else ("Moderate Risk" if score >= 55 else "High Risk")
@@ -1375,8 +1345,6 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
-
 
 
 

@@ -1444,6 +1444,141 @@ def report():
             "fullAnalysis": ultra_clean_text(executiveSummary.get("text",""))
         }
 
+        
+        
+        # ------ Charts (for frontend visualization) ------
+        try:
+            # Helper: normalize percent if values look like 0..1
+            def _normalize_percent_map(mdict):
+                items = []
+                for k, v in (mdict or {}).items():
+                    try:
+                        val = float(v)
+                    except Exception:
+                        continue
+                    items.append((k, val))
+                if not items:
+                    return []
+                # If max <= 1.5 and any > 0, treat as ratio -> percent
+                maxv = max(v for _, v in items)
+                scale = 100.0 if (maxv > 0 and maxv <= 1.5) else 1.0
+                out = [{"label": k.replace("_", " ").title(), "value": float(v) * scale} for k, v in items]
+                out.sort(key=lambda d: d["value"], reverse=True)
+                return out[:6]
+
+            # 1) Components bars (0-100)
+            comp_items = _normalize_percent_map(comp)
+
+            # 2) Stages donut from current log (accept many possible keys)
+            def _get_stage_minutes(m, key_variants):
+                for kv in key_variants:
+                    if isinstance(kv, (list, tuple)):
+                        cur = m
+                        ok = True
+                        for seg in kv:
+                            if isinstance(cur, dict) and seg in cur:
+                                cur = cur[seg]
+                            else:
+                                ok = False; break
+                        if ok:
+                            try:
+                                return float(cur) or 0.0
+                            except Exception:
+                                pass
+                    else:
+                        if kv in m:
+                            try:
+                                return float(m.get(kv) or 0.0)
+                            except Exception:
+                                pass
+                return 0.0
+
+            cur = current if isinstance(current, dict) else {}
+            # broaden key search (minutes, mins, min, or percent that we convert using duration)
+            def _stage_from_many(m, names):
+                # minutes first
+                val = _get_stage_minutes(m, [
+                    f"{names}_sleep_minutes", f"{names}SleepMinutes",
+                    ["stages", f"{names}Minutes"], ["sleep", "stages", names], names+"_minutes", names+"Minutes",
+                    names+"Min", names+"_min", ["stages", names], ["sleepStages", names+"Minutes"]
+                ])
+                if val and val > 0:
+                    return val
+                # percent -> convert using duration if available
+                pct = _get_stage_minutes(m, [
+                    names+"_pct", names+"Pct", names+"Percent", names+"_percent", ["stages", names+"Pct"],
+                ])
+                if pct and duration:
+                    try:
+                        return float(duration) * 60.0 * (float(pct)/100.0)
+                    except Exception:
+                        return 0.0
+                return 0.0
+
+            deep  = _stage_from_many(cur, "deep")
+            rem   = _stage_from_many(cur, "rem")
+            light = _stage_from_many(cur, "light")
+            stages = [{"label":"Deep","value": deep}, {"label":"REM","value": rem}, {"label":"Light","value": light}]
+            # Filter zeros but keep at least one
+            if sum(v["value"] for v in stages) <= 0:
+                stages = [{"label":"Sleep","value": max(1.0, float(duration)*60.0 if duration else 1.0)}]
+
+            # 3) Duration trend sparkline from history (last 7)
+            series = []
+            if isinstance(history, list) and history:
+                def _extract_date(o):
+                    for key in ("date","day","logDate","startDate","sleepDate"):
+                        if isinstance(o.get(key), str):
+                            return o.get(key)
+                    for k2 in ("bedtime","bedTime","sleepStart","sleep_start"):
+                        v = o.get(k2)
+                        if isinstance(v, str):
+                            return v[:5]
+                    return f"#{len(series)+1}"
+                for item in history[-7:]:
+                    d = _num_or_0(item.get("duration_minutes") or item.get("durationMinutes") or item.get("totalSleepMinutes") or item.get("duration"))
+                    if d <= 0:
+                        bed_iso = item.get("bedTime") or item.get("bed_time") or item.get("sleepStart") or item.get("sleep_start")
+                        wake_iso = item.get("wakeTime") or item.get("wake_time") or item.get("sleepEnd") or item.get("sleep_end")
+                        if bed_iso and wake_iso:
+                            d = float(_minutes_between(str(bed_iso), str(wake_iso)))
+                        else:
+                            bed = item.get("bedtime"); wake = item.get("wake_time")
+                            if isinstance(bed, str) and isinstance(wake, str) and ":" in bed and ":" in wake:
+                                b = _hm_to_minutes(bed); w = _hm_to_minutes(wake)
+                                d = float(w - b) if w > b else float((24*60 - b) + w)
+                    series.append({"label": _extract_date(item), "value": float(d)})
+            if not series:
+                series = [{"label":"", "value": float(duration)*60.0 if duration else 0.0}]
+
+            # 4) Lifestyle bar chart (correlations -1..+1)
+            lifestyle_bar = []
+            for it in (lifestyleCorrelations or []):
+                try:
+                    lbl = (it.get("label") or str(it.get("key") or "")).strip() or "Factor"
+                    val = float(it.get("value") or 0.0)
+                    lifestyle_bar.append({"label": lbl, "value": val})
+                except Exception:
+                    continue
+            lifestyle_bar = lifestyle_bar[:6]
+
+            # 5) Doctor note (friendly, short) derived from analysis
+            doctor_note = executiveSummary.get("text") or executiveSummary.get("fullText") or ""
+            doctor_note = ultra_clean_text(doctor_note)[:800]
+
+            resp_charts = {
+                "componentsBars": comp_items,
+                "stagesDonut": stages,
+                "durationTrend": series,
+                "lifestyleBar": lifestyle_bar,
+                "doctorNote": doctor_note
+            }
+            resp["charts"] = resp_charts
+        except Exception as _e:
+            # non-fatal
+            resp["charts"] = resp.get("charts", {})
+        
+        
         resp.update(_legacy_report_shim(resp))
 
         return jsonify(resp), 200

@@ -198,6 +198,9 @@ def ultra_clean_text(text: str) -> str:
     t = _strip_zero_width_and_controls(t)
     # Strip markdown/json cruft
     t = _strip_markdown_and_json_cruft(t)
+    t = _strip_emphasis(t)
+    t = _strip_weird_quotes_around_tiny_tokens(t)
+    t = _fix_weird_punctuation(t)
     # Apply existing plain-text sanitizer for any remaining MD
     t = sanitize_plain_text(t)
     # Remove garbage lines
@@ -219,6 +222,26 @@ def ultra_clean_text(text: str) -> str:
     t = _normalize_whitespace_punct(t)
     return t
 
+
+def _strip_emphasis(s: str) -> str:
+    s = re.sub(r'(\*\*|__)(.*?)\1', lambda m: m.group(2), s, flags=re.S)
+    s = re.sub(r'(?<!\w)\*(?!\s)([^*]+)\*(?!\w)', lambda m: m.group(1), s)
+    s = re.sub(r'(?<!\w)_(?!\s)([^_]+)_(?!\w)', lambda m: m.group(1), s)
+    s = re.sub(r'^\*\s*', '', s, flags=re.M)
+    s = re.sub(r'\*\s*\)', ')', s)
+    return s
+
+def _strip_weird_quotes_around_tiny_tokens(s: str) -> str:
+    return re.sub(r'[“”"\'`]([^\w\s]{1,2})[“”"\'`]', r'\1', s)
+
+def _fix_weird_punctuation(s: str) -> str:
+    x = s
+    x = re.sub(r':\.', '.', x)
+    x = re.sub(r':\s*$', '', x, flags=re.M)
+    x = re.sub(r'([.!?…])\s*([.!?…])+', r'\1', x)
+    x = re.sub(r'\s+([,.:;!?\)])', r'\1', x)
+    x = re.sub(r'([(\[])\s+', r'\1', x)
+    return x
 def dedupe_bullets(items):
     """Return a list of cleaned, unique bullet strings (case-insensitive)."""
     seen = set()

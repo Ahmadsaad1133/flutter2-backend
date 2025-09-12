@@ -111,6 +111,136 @@ def _clean_llm_analysis_output(txt: str) -> str:
     t = re.sub(r'\n{3,}', '\n\n', t).strip()
     return t
 
+
+# ---------- Ultra-clean text utilities (frontend-grade cleaning, now server-side) ----------
+
+_HTML_ENTITY_DEC = re.compile(r"&(#?)(x?)(\w+);")
+
+def _decode_html_entities(s: str) -> str:
+    def _sub(m):
+        lead, hexflag, word = m.groups()
+        if not lead:
+            named = {
+                "nbsp": " ", "amp": "&", "quot": "\"", "apos": "'", "lt": "<", "gt": ">",
+                "ndash": "-", "mdash": "—", "hellip": "…",
+            }
+            return named.get(word, m.group(0))
+        try:
+            if hexflag:
+                code = int(word, 16)
+            else:
+                code = int(word, 10)
+            return chr(code)
+        except Exception:
+            return m.group(0)
+    return _HTML_ENTITY_DEC.sub(_sub, s)
+
+_ZERO_WIDTH = "".join(["\u200B","\u200C","\u200D","\u200E","\u200F","\uFEFF"])
+_CTRL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
+
+def _strip_zero_width_and_controls(s: str) -> str:
+    if not s:
+        return s
+    for ch in _ZERO_WIDTH:
+        s = s.replace(ch, "")
+    return _CTRL_CHARS.sub("", s)
+
+def _strip_markdown_and_json_cruft(s: str) -> str:
+    t = s or ""
+    # Remove fenced code blocks ```lang\n...\n```
+    t = re.sub(r"```[\w-]*\n([\s\S]*?)```", lambda m: m.group(1), t, flags=re.MULTILINE)
+    # Inline code
+    t = re.sub(r"`([^`]+)`", lambda m: m.group(1), t)
+    # Headings
+    t = re.sub(r"^\s{0,3}#{1,6}\s*", "", t, flags=re.MULTILINE)
+    # Blockquotes
+    t = re.sub(r"^\s{0,3}>\s?", "", t, flags=re.MULTILINE)
+    # Tables / pipes lines
+    t = re.sub(r"^\s*\|.*\|\s*$", "", t, flags=re.MULTILINE)
+    # Horizontal rules
+    t = re.sub(r"^\s*(?:-{3,}|_{3,}|\*{3,})\s*$", "", t, flags=re.MULTILINE)
+    # Normalize list markers to "- "
+    t = re.sub(r"^\s{0,3}[•*\-]\s+", "- ", t, flags=re.MULTILINE)
+    # Remove long inline JSON dumps on single lines
+    t = re.sub(r"(?:^|\n)[\s\t]*[\{\[][^\n]{120,}[\}\]]", "", t, flags=re.MULTILINE)
+    # Remove leading key: value at line start (keeps value)
+    t = re.sub(r'^[ \t]*(?:"|\')?[A-Za-z0-9_ .\-]+(?:"|\')?\s*:\s*', "", t, flags=re.MULTILINE)
+    # Orphan braces/brackets/commas lines
+    t = re.sub(r'^[ \t]*[\}\]\[,]+[ \t]*$', "", t, flags=re.MULTILINE)
+    # Collapse leftover braces/brackets
+    t = re.sub(r'[\{\}\[\]]+', "", t)
+    return t
+
+def _normalize_whitespace_punct(s: str) -> str:
+    t = s.replace("\r\n", "\n").replace("\r", "\n")
+    # Trim trailing spaces
+    t = re.sub(r"[ \t]+$", "", t, flags=re.MULTILINE)
+    # Collapse 3+ newlines to 2
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    # De-duplicate punctuation
+    t = re.sub(r"([.!?…])\1{2,}", r"\1", t)
+    # Collapse multiple spaces
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    return t.strip()
+
+def ultra_clean_text(text: str) -> str:
+    """Aggressive cleaner: decode entities, strip zero-width/control, remove markdown/JSON noise, normalize spacing."""
+    if not text:
+        return ""
+    t = text
+    # Deep-unescape visible escapes like \\n, \\t
+    t = t.replace("\\\\n", "\n").replace("\\\\t", "  ").replace("\\\\r", "")
+    # Unicode escapes like \\u2014
+    t = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), t)
+    # HTML entities
+    t = _decode_html_entities(t)
+    # Remove zero-width + control
+    t = _strip_zero_width_and_controls(t)
+    # Strip markdown/json cruft
+    t = _strip_markdown_and_json_cruft(t)
+    # Apply existing plain-text sanitizer for any remaining MD
+    t = sanitize_plain_text(t)
+    # Remove garbage lines
+    lines = []
+    for raw in t.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low in ("null", "none") or line in ("{}", "[]"):
+            continue
+        if re.fullmatch(r"[,.:;~`^=+_()<>|\\/]+", line):
+            continue
+        if re.fullmatch(r"[-•]\s*", line):
+            continue
+        lines.append(line)
+    t = "\n".join(lines)
+    # Normalize spacing
+    t = _normalize_whitespace_punct(t)
+    return t
+
+def dedupe_bullets(items):
+    """Return a list of cleaned, unique bullet strings (case-insensitive)."""
+    seen = set()
+    out = []
+    for x in items or []:
+        s = ultra_clean_text(str(x))
+        s = s.strip(" -•\u2022")
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        # Ensure bullet punctuation
+        if len(s) >= 3 and not re.search(r"[.!?…]$", s):
+            s += "."
+        out.append(f"• {s}")
+    return out[:6]
+
+
+
+
 def _is_weak_analysis(txt: str) -> bool:
     if not txt:
         return True
@@ -1194,26 +1324,32 @@ def report():
             )
 
         # ---------- Compose sections ----------
+        
         bullets = []
+        # Build bullets from highlights (title — value. insight)
         for h in highlights[:4]:
             title = (h.get('title') or '').strip()
             value = (h.get('value') or '').strip()
             insight = (h.get('insight') or '').strip()
-            b = ' — '.join([t for t in [title, value] if t])
-            bullets.append(f"{b}. {insight}" if b else insight)
-        if not bullets and analysisText:
-            lines = [l for l in sanitize_plain_text(analysisText).splitlines() if l.strip()]
+            parts = [t for t in [title, value] if t]
+            merged = (' — '.join(parts) + ('. ' if parts else '')) + insight
+            bullets.append(merged)
+        # Fallback to first lines of analysis if empty
+        if not [b for b in bullets if b.strip()] and analysisText:
+            lines = [l for l in ultra_clean_text(analysisText).splitlines() if l.strip()]
             bullets.extend(lines[:3])
+        bullets = dedupe_bullets(bullets)
+        
 
         executiveSummary = {
             "title": "Executive Summary",
             "bullets": bullets,
-            "fullText": sanitize_plain_text(analysisText),
-            "text": sanitize_plain_text(analysisText),
+            "fullText": ultra_clean_text(analysisText),
+            "text": ultra_clean_text(analysisText),
             "rawAnalysisPreview": (
-                sanitize_plain_text(analysisText)[:600] + "…"
+                ultra_clean_text(analysisText)[:600] + "…"
                 if analysisText and len(analysisText) > 600
-                else sanitize_plain_text(analysisText)
+                else ultra_clean_text(analysisText)
             ),
             "highlights": highlights,
         }
@@ -1280,9 +1416,9 @@ def report():
             "wakeWindows": wakeWindows,
             "whatIfScenarios": whatIfScenarios,
             "lifestyleCorrelations": lifestyleCorrelations,
-            "summary": executiveSummary.get("text",""),
-            "analysisText": executiveSummary.get("text",""),
-            "fullAnalysis": executiveSummary.get("text","")
+            "summary": ultra_clean_text(executiveSummary.get("text","")),
+            "analysisText": ultra_clean_text(executiveSummary.get("text","")),
+            "fullAnalysis": ultra_clean_text(executiveSummary.get("text",""))
         }
 
         resp.update(_legacy_report_shim(resp))
@@ -1328,7 +1464,6 @@ if __name__ == "__main__":
     debug_mode = os.getenv("DEBUG", "false").lower() == "true"
     logger.info(f"Starting server on port {port} in {'debug' if debug_mode else 'production'} mode | LLM_PROVIDER={LLM_PROVIDER} | MODEL={LLM_MODEL}")
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
-
 
 
 
